@@ -3,11 +3,16 @@
 - Setiap node bergosip ke semua node yang dikenalnya tiap GOSSIP_EVERY detik.
 - Node yang tidak terdengar DEAD_AFTER detik dianggap mati.
 - Kalau pemimpin mati, SEMUA node berhenti bekerja (fase "electing"), menunggu
-  SETTLE detik agar pandangan semua node sama, lalu node terbaik (menganggur,
-  prioritas, skor, id) mengklaim kepemimpinan dengan epoch baru. Begitu
-  pemimpin baru terdengar, semua node melanjutkan tugasnya.
-- Klaim ganda diselesaikan otomatis: epoch lebih besar menang, kalau sama,
-  node dengan peringkat lebih tinggi menang.
+  SETTLE detik agar pandangan semua node sama, lalu node terbaik mengklaim
+  kepemimpinan. Begitu pemimpin baru terdengar, semua node melanjutkan tugasnya.
+- Node terbaik: yang bisa menjalankan bot It's Me, lalu prioritas, menganggur,
+  skor, id. Kalau pemimpin tidak punya bot sedangkan node lain punya, node itu
+  mengambil alih, supaya bot Telegram selalu jalan di komputer pemimpin.
+- Dua klaim pemimpin bertemu (jaringan sempat terputus, atau komputer yang baru
+  menyala sempat sendirian): yang punya bot menang, lalu yang paling lama
+  memimpin. Jadi komputer yang baru menyala tidak merebut posisi pemimpin.
+- Pemimpin yang menyala ulang cepat (mis. memasang pembaruan) langsung memimpin
+  lagi, sebelum node lain sempat menganggapnya mati.
 - Domain internet dibagi ke node yang sedang menganggur dengan weighted
   rendezvous hashing, sehingga satu domain hanya dikunjungi satu node.
 """
@@ -27,7 +32,14 @@ GOSSIP_EVERY = 2.0
 DEAD_AFTER = 10.0
 FORGET_AFTER = 600.0
 SETTLE = 6.0
+# Node yang belum pernah mendengar node lain sejak menyala menunggu lebih lama
+# sebelum mengangkat dirinya (beri waktu Tailscale tersambung saat komputer baru menyala).
+LONE_WAIT = 30.0
 CLAIM_TIMEOUT = 25.0
+# Pemimpin yang menyala lagi dalam sekian detik langsung memimpin lagi.
+RESUME_WINDOW = 8.0
+# Selisih lama memimpin yang dianggap sama (jeda gosip tidak persis).
+AGE_TOLERANCE = 5.0
 
 
 def log(*a):
@@ -35,7 +47,7 @@ def log(*a):
 
 
 class Cluster:
-    def __init__(self, cfg, profile, store):
+    def __init__(self, cfg, profile, store, bot=False):
         self.cfg, self.profile, self.store = cfg, profile, store
         self.id = cfg["node_id"]
         self.addr = self._my_addr()
@@ -43,17 +55,22 @@ class Cluster:
         self.addrs = set(cfg["seeds"])  # alamat yang belum tentu dikenal
         self.lock = threading.RLock()
         self.leader = None
-        # Epoch tersimpan hanya dipakai saat mengklaim, supaya node yang baru
-        # menyala tetap menerima pemimpin yang sedang berjalan.
+        # Epoch hanya penanda urutan pemimpin (untuk log & status).
         self.epoch = 0
         self._stored_epoch = int(store.get("epoch", 0))
         self.phase = "electing"
         self.elect_start = time.time() + 2  # beri waktu gosip pertama
         self.started = time.time()
         self.working = False
+        # Bot It's Me di komputer ini siap menjadi bot Telegram aktif?
+        self.bot = bot
+        self.lead_since = 0.0
+        self._beat = 0.0
+        self._ever_heard = False
         self.pool = concurrent.futures.ThreadPoolExecutor(16)
         self._owner_cache = ({}, None)
         self._last_discovery = 0
+        self._resume()
 
     def _my_addr(self):
         if self.cfg["advertise"]:
@@ -78,7 +95,9 @@ class Cluster:
         return {"id": self.id, "name": self.cfg["name"], "addr": self.addr,
                 "score": self.profile["score"], "model": self.profile["model"],
                 "working": self.working, "priority": self.cfg["leader_priority"],
-                "leader": self.leader, "epoch": self.epoch, "phase": self.phase,
+                "bot": self.bot, "leader": self.leader, "epoch": self.epoch,
+                "phase": self.phase,
+                "lead_age": time.time() - self.lead_since if self.is_leader else None,
                 "version": VERSION, "started": self.started, "stats": self.store.stats()}
 
     def alive(self):
@@ -91,7 +110,34 @@ class Cluster:
 
     @staticmethod
     def rank(s):
-        return (bool(s.get("working")), s.get("priority", 0), s.get("score", 0), s["id"])
+        """Urutan calon pemimpin saat pemilihan (lebih besar lebih diutamakan)."""
+        return (bool(s.get("bot")), s.get("priority", 0), bool(s.get("working")),
+                s.get("score", 0), s["id"])
+
+    @staticmethod
+    def claims(s):
+        """Apakah state s menyatakan dirinya pemimpin yang sedang memimpin."""
+        return s.get("leader") == s["id"] and s.get("phase") == "running"
+
+    def _lead_age(self, s):
+        """Lama s memimpin (detik), diukur dengan jam s sendiri ditambah umur kabarnya."""
+        if s["id"] == self.id:
+            return time.time() - self.lead_since if self.is_leader else -1.0
+        age = s.get("lead_age")
+        if age is None:
+            return -1.0
+        p = self.peers.get(s["id"])
+        return age + (time.time() - p["seen"] if p else 0.0)
+
+    def stronger(self, a, b):
+        """True kalau klaim pemimpin a mengalahkan klaim b."""
+        if bool(a.get("bot")) != bool(b.get("bot")):
+            return bool(a.get("bot"))
+        age_a, age_b = self._lead_age(a), self._lead_age(b)
+        if abs(age_a - age_b) > AGE_TOLERANCE:
+            return age_a > age_b
+        key = lambda s: (s.get("priority", 0), s.get("score", 0), s["id"])  # noqa: E731
+        return key(a) > key(b)
 
     @property
     def paused(self):
@@ -108,6 +154,7 @@ class Cluster:
             with self.lock:
                 self.peers[s["id"]] = {"state": s, "seen": time.time()}
                 self.addrs.discard(s["addr"])
+                self._ever_heard = True
             self._consider_claim(s)
         for a in payload.get("peers", []):
             if a != self.addr and not any(p["state"]["addr"] == a for p in self.peers.values()):
@@ -147,20 +194,24 @@ class Cluster:
 
     # --- pemimpin --------------------------------------------------------------
     def _consider_claim(self, s):
-        """s adalah state node lain; terima klaim pemimpinnya kalau lebih kuat."""
-        if s.get("leader") != s["id"] or s.get("phase") != "running":
+        """s adalah state node lain yang mengaku pemimpin; ikuti kalau lebih kuat."""
+        if not self.claims(s):
             return
         with self.lock:
+            if self.leader == s["id"]:
+                self.epoch = max(self.epoch, s.get("epoch", 0))
+                return
             cur = self.alive().get(self.leader) if self.leader else None
-            better = s["epoch"] > self.epoch or (
-                s["epoch"] == self.epoch and (cur is None or self.rank(s) > self.rank(cur)))
-            if not better or self.leader == s["id"]:
-                if self.leader == s["id"]:
-                    self.epoch = max(self.epoch, s["epoch"])
+            if cur is not None and self.claims(cur) and not self.stronger(s, cur):
                 return
             was_leader = self.is_leader
-            self.leader, self.epoch = s["id"], s["epoch"]
+            self.leader = s["id"]
+            self.epoch = max(self.epoch, s.get("epoch", 0))
             self.store.put("epoch", self.epoch)
+            if was_leader:
+                self._forget_leadership()
+            if self.phase == "running":
+                log(f"pemimpin sekarang: {s['name']} (epoch {self.epoch})")
             self._set_phase("running", f"pemimpin: {s['name']} (epoch {self.epoch})")
         if was_leader:
             log("kepemimpinan diserahkan ke", s["name"])
@@ -170,31 +221,93 @@ class Cluster:
         now = time.time()
         with self.lock:
             alive = self.alive()
-            if self.leader and self.leader in alive:
+            cur = alive.get(self.leader) if self.leader else None
+            if cur is not None and not self.claims(cur):
+                # Pemimpin masih hidup tapi sudah tidak memimpin (mis. menyerahkan
+                # ke node yang punya bot): ikuti penggantinya kalau jelas.
+                nxt = alive.get(cur.get("leader"))
+                if nxt is not None and self.claims(nxt):
+                    self._consider_claim(nxt)
+                    cur = alive.get(self.leader)
+                else:
+                    cur = None
+            if cur is not None:
                 if self.phase != "running":
                     self._set_phase("running", "pemimpin terdengar lagi")
+                if self.is_leader:
+                    self._heartbeat()
+                else:
+                    self._maybe_take_over(alive, cur)
                 return
             if self.phase == "running":
-                name = (self.peers.get(self.leader) or {}).get("state", {}).get("name", "?")
+                name = ((self.peers.get(self.leader) or {}).get("state") or {}).get("name", "?")
                 self._set_phase("electing", f"pemimpin {name} hilang, semua node berhenti sejenak")
                 self.elect_start = now
                 self.leader = None
             waited = now - self.elect_start
-            if waited < SETTLE:
+            if waited < (SETTLE if self._ever_heard else LONE_WAIT):
                 return
             best = max(alive.values(), key=self.rank)
             if best["id"] == self.id or waited > SETTLE + CLAIM_TIMEOUT:
                 self._become_leader(alive)
 
+    def _maybe_take_over(self, alive, cur):
+        """Pemimpin tidak punya bot It's Me padahal node ini punya: ambil alih,
+        supaya bot Telegram jalan di pemimpin. Hanya node ber-bot terbaik."""
+        if cur.get("bot") or not self.bot:
+            return
+        best = max((s for s in alive.values() if s.get("bot")), key=self.rank)
+        if best["id"] == self.id:
+            log(f"pemimpin {cur['name']} tidak punya bot It's Me; node ini mengambil alih")
+            self._become_leader(alive)
+
     def _become_leader(self, alive):
         self.epoch = max([self.epoch, self._stored_epoch]
                          + [s.get("epoch", 0) for s in alive.values()]) + 1
         self.leader = self.id
+        self.lead_since = time.time()
+        self._beat = 0.0
+        self._heartbeat()
         self.store.put("epoch", self.epoch)
+        if self.phase == "running":
+            log(f"node ini menjadi PEMIMPIN (epoch {self.epoch})")
         self._set_phase("running", f"node ini menjadi PEMIMPIN (epoch {self.epoch})")
         self._hook("leader_start")
         # Umumkan segera supaya node lain cepat melanjutkan kerja.
         threading.Thread(target=self.gossip_once, daemon=True).start()
+
+    def _heartbeat(self):
+        """Catat bahwa node ini masih memimpin, untuk _resume setelah menyala ulang."""
+        now = time.time()
+        if now - self._beat >= GOSSIP_EVERY / 2:
+            self._beat = now
+            self.store.put("leadership", json.dumps(
+                {"epoch": self.epoch, "since": self.lead_since, "beat": now}))
+
+    def _forget_leadership(self):
+        self.lead_since = 0.0
+        self.store.put("leadership", "")
+
+    def _resume(self):
+        """Pemimpin yang baru saja menyala ulang (mis. pembaruan) memimpin lagi."""
+        try:
+            saved = json.loads(self.store.get("leadership") or "null")
+            fresh = saved and 0 <= time.time() - float(saved["beat"]) < RESUME_WINDOW
+        except (ValueError, KeyError, TypeError):
+            fresh = False
+        if not fresh:
+            return
+        self.leader, self.epoch = self.id, int(saved["epoch"])
+        self.lead_since = float(saved["since"])
+        self.phase = "running"
+        log(f"menyala ulang cepat, langsung memimpin lagi (epoch {self.epoch})")
+
+    def resign(self):
+        """Berhenti memimpin karena node dimatikan."""
+        with self.lock:
+            if self.is_leader:
+                self._forget_leadership()
+                self._hook("leader_stop")
 
     def _set_phase(self, phase, why):
         if phase != self.phase:
@@ -220,8 +333,10 @@ class Cluster:
         u = (h + 1) / (2**160 + 2)
         return -max(1.0, s.get("score", 1)) / math.log(u)
 
-    def owner(self, domain):
-        ws = self.workers()
+    def owner(self, domain, ws=None):
+        """Node yang mengerjakan domain ini. `ws` = hasil workers() kalau sudah ada
+        (hemat saat menanyakan banyak domain sekaligus)."""
+        ws = self.workers() if ws is None else ws
         sig = tuple((s["id"], s.get("score")) for s in ws)
         cache, csig = self._owner_cache
         if csig != sig:

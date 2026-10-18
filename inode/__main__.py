@@ -15,7 +15,7 @@ import threading
 import time
 import urllib.request
 
-from . import VERSION, system, updater
+from . import VERSION, itsme, llm, system, updater
 from .cluster import Cluster, log
 from .config import Config
 from .crawler import Crawler
@@ -30,21 +30,49 @@ class Node:
     pass
 
 
-def load_profile(cfg):
-    path = os.path.join(cfg.data_dir, "profile.json")
+def read_profile(cfg):
+    """(profil tersimpan atau None, masih berlaku?)."""
     try:
-        with open(path) as f:
+        with open(os.path.join(cfg.data_dir, "profile.json")) as f:
             prof = json.load(f)
-        if prof.get("model_setting") == cfg["model"] and time.time() - prof["tested"] < 7 * 86400:
-            return prof
-    except (OSError, ValueError, KeyError):
-        pass
+        age = time.time() - prof["tested"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None, False
+    # Model belum siap saat dites (mis. Ollama belum menyala): tes lagi sebentar lagi.
+    max_age = 1800 if prof.get("retry") else 7 * 86400
+    return prof, prof.get("model_setting") == cfg["model"] and age < max_age
+
+
+def refresh_profile(node, stop, first):
+    """Tes kemampuan di belakang, supaya node langsung bergabung ke jaringan.
+    Tes ulang (bukan yang pertama) menunggu komputer menganggur."""
+    while not first and not node.cluster.working and not stop.is_set():
+        stop.wait(10)
+    if stop.is_set():
+        return
     log("menguji kemampuan komputer ini ...")
-    prof = system.benchmark(cfg)
-    prof["model_setting"] = cfg["model"]
-    with open(path, "w") as f:
+    prof = system.benchmark(node.cfg)
+    prof["model_setting"] = node.cfg["model"]
+    with open(os.path.join(node.cfg.data_dir, "profile.json"), "w") as f:
         json.dump(prof, f, indent=2)
-    return prof
+    node.profile.update(prof)
+    node.crawler.ensure_workers(stop, prof["workers"])
+    log(f"tes selesai: skor {prof['score']} | model {prof['model'] or '-'} "
+        f"({prof['tps']} tok/s) | {prof['workers']} pekerja")
+
+
+def sync_itsme(node):
+    """Salin memori, otak, dan mode akses It's Me dari pemimpin ke komputer ini."""
+    c = node.cluster
+    if not c.bot or c.is_leader or c.paused or not c.leader:
+        return
+    lead = c.alive().get(c.leader)
+    if not lead or not lead.get("bot"):
+        return
+    res = c.rpc(lead["addr"], "/itsme-state", timeout=5)
+    changed = itsme.write_state(node.cfg, (res or {}).get("files"))
+    if changed:
+        log("salinan It's Me dari pemimpin diperbarui:", ", ".join(changed))
 
 
 def run(args):
@@ -64,44 +92,59 @@ def run(args):
 
     node = Node()
     node.cfg = cfg
-    node.profile = load_profile(cfg)
+    prof, fresh = read_profile(cfg)
+    node.profile = prof or system.provisional_profile(cfg)
     node.store = Store(cfg.data_dir)
-    node.cluster = Cluster(cfg, node.profile, node.store)
+    node.cluster = Cluster(cfg, node.profile, node.store, bot=itsme.ready(cfg))
     node.crawler = Crawler(cfg, node.profile, node.cluster, node.store)
     make_server(node)
     p = node.profile
     log(f"It's Me Node {VERSION} | {cfg['name']} @ {node.cluster.addr} | skor {p['score']} | "
-        f"model {p['model'] or '-'} ({p['tps']} tok/s) | {p['workers']} pekerja")
+        f"model {p['model'] or '-'} ({p['tps']} tok/s) | {p['workers']} pekerja | "
+        f"bot It's Me {'siap' if node.cluster.bot else '-'}")
 
     stop = threading.Event()
     threading.Thread(target=node.cluster.gossip_loop, args=(stop,), daemon=True).start()
     node.crawler.start(stop)
+    if not fresh:
+        threading.Thread(target=refresh_profile, args=(node, stop, prof is None),
+                         daemon=True).start()
 
-    last_update, last_report = time.time(), time.time()
+    last_update = last_report = last_bot = last_sync = time.time()
     try:
         while not stop.is_set():
+            now = time.time()
             idle = system.idle_seconds() >= cfg["idle_minutes"] * 60
             working = cfg["always_work"] or idle
             if working != node.cluster.working:
                 node.cluster.working = working
                 log("komputer menganggur, mulai riset" if working else
                     "komputer sedang dipakai, riset dijeda")
-            if time.time() - last_report > 300:
-                last_report = time.time()
+                if not working and node.profile["model"]:
+                    # Lepas model dari memori supaya komputer lega untuk pemiliknya.
+                    threading.Thread(target=llm.unload, daemon=True,
+                                     args=(cfg["ollama_url"], node.profile["model"])).start()
+            if now - last_bot > 60:
+                last_bot = now
+                node.cluster.bot = itsme.ready(cfg)
+            if now - last_sync > 20:
+                last_sync = now
+                sync_itsme(node)
+            if now - last_report > 300:
+                last_report = now
                 log(f"status: {node.store.stats()} | node hidup {len(node.cluster.alive())} | "
                     f"fase {node.cluster.phase}")
-            if cfg["auto_update"] and time.time() - last_update > 1800:
-                last_update = time.time()
+            if cfg["auto_update"] and now - last_update > 1800:
+                last_update = now
                 if updater.update_if_needed():
+                    # Pemimpin langsung memimpin lagi setelah menyala ulang
+                    # (Cluster._resume), jadi bot It's Me tidak ikut berhenti.
                     stop.set()
-                    if node.cluster.is_leader:
-                        node.cluster._hook("leader_stop")
                     sys.exit(updater.RESTART_CODE)
             stop.wait(2)
     except KeyboardInterrupt:
         stop.set()
-        if node.cluster.is_leader:
-            node.cluster._hook("leader_stop")
+        node.cluster.resign()
 
 
 def local(args, path, payload=None):
@@ -138,7 +181,8 @@ def main():
         for n in s["nodes"]:
             print(f"{'*' if n['leader'] else ' '} {n['name']:<18} {n['addr']:<22} "
                   f"{'kerja' if n['working'] else 'dipakai':<8} skor {n['score']:<6} "
-                  f"model {n['model'] or '-':<12} {n['stats']}")
+                  f"model {n['model'] or '-':<12} bot {'ya' if n.get('bot') else '-':<3} "
+                  f"{n['stats']}")
         return
     if args.cmd == "recent":
         for d in local(args, "/recent")["docs"]:

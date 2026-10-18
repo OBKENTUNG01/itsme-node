@@ -117,6 +117,16 @@ function Install-ItsMeNode {
     Say "Tes kemampuan & unduh model berjalan di belakang (bisa beberapa menit)."
     Write-Host "Log      : $App\logs\node.log"
     Write-Host "Status   : & '$py' -m inode status   (jalankan di folder $App)"
+
+    # 8. Bot Telegram It's Me ikut pemimpin
+    if (Test-Path (Join-Path $HOME "ItsMe\.env")) {
+        Say "It's Me terdeteksi: bot Telegram otomatis aktif di komputer yang sedang menjadi pemimpin."
+    } else {
+        Write-Host ""
+        Write-Host "Supaya komputer ini bisa menggantikan bot Telegram It's Me saat pemimpin mati,"
+        Write-Host "pasang juga It's Me dengan token bot yang SAMA seperti komputer lain:"
+        Write-Host "  irm https://raw.githubusercontent.com/OBKENTUNG01/website/main/jarvis/setup.ps1 | iex"
+    }
     if ($first) {
         Write-Host ""
         Write-Host "KODE GABUNG (simpan, pakai di komputer lain): $code" -ForegroundColor Yellow

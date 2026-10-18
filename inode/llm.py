@@ -37,6 +37,14 @@ def pull(base, model):
         return False
 
 
+def unload(base, model):
+    """Lepas model dari memori, supaya komputer lega saat dipakai pemiliknya."""
+    try:
+        _post(base, "/api/generate", {"model": model, "keep_alive": 0}, timeout=30)
+    except (OSError, ValueError):
+        pass
+
+
 def generate(base, model, prompt, max_tokens=300, timeout=300):
     payload = {
         "model": model, "prompt": prompt, "stream": False, "think": False,

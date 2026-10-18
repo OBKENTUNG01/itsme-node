@@ -153,12 +153,14 @@ class Crawler:
         self.owned, self.owned_at = [], 0
         self.last_seed = 0
         self.pages_done = 0
+        self.n_workers = 0
 
     # --- pilih pekerjaan ------------------------------------------------------
     def _refresh_owned(self):
         me = self.cluster.id
         doms = self.store.frontier_domains()
-        self.owned = [d for d in doms if (self.cluster.owner(d) or {}).get("id") == me]
+        ws = self.cluster.workers()
+        self.owned = [d for d in doms if (self.cluster.owner(d, ws) or {}).get("id") == me]
         random.shuffle(self.owned)
         self.owned_at = time.time()
 
@@ -298,8 +300,9 @@ class Crawler:
             if self.cluster.paused:
                 continue
             groups = {}
+            ws = self.cluster.workers()
             for d in self.store.frontier_domains():
-                o = self.cluster.owner(d)
+                o = self.cluster.owner(d, ws)
                 if o and o["id"] != self.cluster.id:
                     groups.setdefault(o["addr"], []).append(d)
             for addr, doms in groups.items():
@@ -310,9 +313,14 @@ class Crawler:
                 if res is None:
                     self.store.give_back(rows)
 
-    def start(self, stop):
-        for _ in range(self.profile["workers"]):
+    def ensure_workers(self, stop, n):
+        """Tambah thread pekerja sampai ada n (mis. setelah tes kemampuan selesai)."""
+        while self.n_workers < n:
+            self.n_workers += 1
             threading.Thread(target=self.worker, args=(stop,), daemon=True).start()
+
+    def start(self, stop):
+        self.ensure_workers(stop, self.profile["workers"])
         threading.Thread(target=self.rebalance, args=(stop,), daemon=True).start()
 
 

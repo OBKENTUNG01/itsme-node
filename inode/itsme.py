@@ -1,0 +1,90 @@
+"""Bot Telegram It's Me di komputer ini.
+
+It's Me (repo OBKENTUNG01/website) yang dipasang dengan token bot yang sama di
+beberapa komputer menanyakan node lokal siapa pemimpinnya, dan hanya aktif di
+komputer pemimpin. Modul ini memberi tahu jaringan apakah komputer ini bisa
+menjadi bot aktif, dan menyalin memori, otak yang dipilih, dan mode akses dari
+pemimpin ke sini, supaya bot tetap sama walau pindah komputer.
+
+Isi .env (token, kunci) tidak pernah dibaca selain untuk memeriksa ada/tidaknya,
+dan tidak pernah dikirim ke node lain.
+"""
+
+import os
+
+SYNC_FILES = ("memory.md", "brain.json", "access.json")
+MAX_FILE = 256 * 1024
+_OFF = ("0", "false", "no", "off")
+
+
+def home(cfg):
+    if cfg.get("itsme_dir"):
+        return cfg["itsme_dir"]
+    return os.path.join(os.path.expanduser("~"), "ItsMe" if os.name == "nt" else "itsme")
+
+
+def _env_has(path, names):
+    """{nama: terisi?} dari .env It's Me, tanpa menyimpan nilainya."""
+    found = {}
+    try:
+        with open(os.path.join(path, ".env"), encoding="utf-8-sig") as f:
+            for line in f:
+                key, sep, value = line.strip().partition("=")
+                key = key.strip()
+                if sep and key in names and not key.startswith("#"):
+                    value = value.strip().strip("'\"").strip()
+                    found[key] = value.lower() if key == "ITSME_FOLLOW_NODE" else bool(value)
+    except OSError:
+        return None
+    return found
+
+
+def ready(cfg):
+    """True kalau It's Me terpasang di sini dan bisa menjadi bot Telegram aktif."""
+    if not cfg.get("itsme_follow", True):
+        return False
+    env = _env_has(home(cfg), {"TELEGRAM_BOT_TOKEN", "OWNER_TELEGRAM_ID",
+                               "ITSME_HUB_URL", "ITSME_FOLLOW_NODE"})
+    if not env:
+        return False
+    if env.get("ITSME_HUB_URL") or env.get("ITSME_FOLLOW_NODE") in _OFF:
+        return False  # mode perangkat Hub lama, atau sengaja tidak mengikuti node
+    return bool(env.get("TELEGRAM_BOT_TOKEN") and env.get("OWNER_TELEGRAM_ID"))
+
+
+def read_state(cfg):
+    """Isi berkas yang harus sama di semua komputer (dipanggil di pemimpin)."""
+    out = {}
+    data = os.path.join(home(cfg), "data")
+    for name in SYNC_FILES:
+        path = os.path.join(data, name)
+        try:
+            if os.path.getsize(path) <= MAX_FILE:
+                with open(path, encoding="utf-8", newline="") as f:
+                    out[name] = f.read()
+        except (OSError, UnicodeDecodeError):
+            pass
+    return out
+
+
+def write_state(cfg, files):
+    """Tulis salinan dari pemimpin. Kembalikan nama berkas yang berubah."""
+    data = os.path.join(home(cfg), "data")
+    changed = []
+    for name, text in (files or {}).items():
+        if name not in SYNC_FILES or not isinstance(text, str) or len(text) > MAX_FILE:
+            continue
+        path = os.path.join(data, name)
+        try:
+            with open(path, encoding="utf-8", newline="") as f:
+                if f.read() == text:
+                    continue
+        except (OSError, UnicodeDecodeError):
+            pass
+        os.makedirs(data, exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8", newline="") as f:
+            f.write(text)
+        os.replace(tmp, path)
+        changed.append(name)
+    return changed

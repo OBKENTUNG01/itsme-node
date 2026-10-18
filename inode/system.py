@@ -68,7 +68,10 @@ def idle_seconds():
     li.cbSize = ctypes.sizeof(li)
     if not ctypes.windll.user32.GetLastInputInfo(ctypes.byref(li)):
         return 0
-    return (ctypes.windll.kernel32.GetTickCount() - li.dwTime) / 1000.0
+    tick = ctypes.windll.kernel32.GetTickCount
+    tick.restype = ctypes.c_uint32  # bawaan ctypes c_int: negatif setelah ±24,8 hari menyala
+    # Keduanya hitungan 32-bit yang berputar ulang tiap ±49,7 hari.
+    return ((tick() - li.dwTime) & 0xFFFFFFFF) / 1000.0
 
 
 def _tailscale():
@@ -124,6 +127,36 @@ def pick_model(ram, vram):
     return ""
 
 
+def start_ollama():
+    """Nyalakan Ollama kalau terpasang tapi belum jalan (mis. baru dipasang winget)."""
+    exe = shutil.which("ollama")
+    if not exe and IS_WIN:
+        p = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Ollama", "ollama.exe")
+        exe = p if os.path.exists(p) else None
+    if not exe:
+        return False
+    try:
+        subprocess.Popen([exe, "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         creationflags=_NO_WINDOW | (0x00000008 if IS_WIN else 0))  # DETACHED_PROCESS
+        return True
+    except OSError:
+        return False
+
+
+def wait_ollama(url, seconds=60):
+    """True kalau Ollama menjawab; kalau belum, coba nyalakan lalu tunggu."""
+    if llm.available(url):
+        return True
+    if not start_ollama():
+        return False
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        time.sleep(2)
+        if llm.available(url):
+            return True
+    return False
+
+
 def benchmark(cfg):
     """Ukur kemampuan node. Hasil: dict profil (skor makin besar makin kuat)."""
     ram = ram_gb()
@@ -133,13 +166,14 @@ def benchmark(cfg):
     if model == "auto":
         model = pick_model(ram, vram)
     tps = 0.0
+    retry = False  # model diinginkan tapi Ollama belum siap: tes lagi sebentar lagi
     if model:
-        if not llm.available(cfg["ollama_url"]):
-            model = ""
+        if not wait_ollama(cfg["ollama_url"]):
+            model, retry = "", True
         elif model not in llm.installed(cfg["ollama_url"]):
             print(f"[tes] mengunduh model {model} ...", flush=True)
             if not llm.pull(cfg["ollama_url"], model):
-                model = ""
+                model, retry = "", True
     if model:
         tps = llm.speed(cfg["ollama_url"], model)
         if tps < 0.8:  # terlalu lambat untuk merangkum, jadikan penjelajah saja
@@ -148,4 +182,12 @@ def benchmark(cfg):
     workers = cfg["workers"] or max(2, min(8, threads // 2 + (2 if score > 60 else 0)))
     return {"ram": ram, "gpu": gname, "vram": vram, "threads": threads,
             "model": model, "tps": round(tps, 1), "score": score,
-            "workers": workers, "tested": int(time.time())}
+            "workers": workers, "tested": int(time.time()), "retry": retry}
+
+
+def provisional_profile(cfg):
+    """Profil sementara selama tes kemampuan pertama berjalan (tanpa model)."""
+    threads = os.cpu_count() or 2
+    return {"ram": ram_gb(), "gpu": "", "vram": 0.0, "threads": threads, "model": "",
+            "tps": 0.0, "score": float(threads), "workers": cfg["workers"] or 2,
+            "tested": 0, "retry": True}

@@ -15,6 +15,7 @@ class Store:
         self.db = sqlite3.connect(os.path.join(data_dir, "node.db"), check_same_thread=False,
                                   timeout=30)
         self.lock = threading.RLock()
+        self._stats, self._stats_at = {}, 0.0
         with self.lock:
             self.db.executescript("""
                 PRAGMA journal_mode=WAL;
@@ -146,12 +147,18 @@ class Store:
                                    "ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
         return [{"url": u, "title": t, "summary": s, "node": n} for u, t, s, n in rows]
 
-    def stats(self):
-        with self.lock:
-            q = lambda sql: self.db.execute(sql).fetchone()[0]
-            return {"docs": q("SELECT COUNT(*) FROM docs"),
-                    "visited": q("SELECT COUNT(*) FROM visited"),
-                    "frontier": q("SELECT COUNT(*) FROM frontier")}
+    def stats(self, max_age=15):
+        """Jumlah dokumen/kunjungan/antrean. Disimpan sebentar karena dipanggil di
+        setiap gosip, dan COUNT(*) makin lambat saat datanya membesar."""
+        now = time.time()
+        if now - self._stats_at > max_age:
+            with self.lock:
+                q = lambda sql: self.db.execute(sql).fetchone()[0]  # noqa: E731
+                self._stats = {"docs": q("SELECT COUNT(*) FROM docs"),
+                               "visited": q("SELECT COUNT(*) FROM visited"),
+                               "frontier": q("SELECT COUNT(*) FROM frontier")}
+            self._stats_at = now
+        return dict(self._stats)
 
     # --- checkpoint kecil ------------------------------------------------------
     def get(self, k, default=None):

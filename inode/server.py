@@ -7,7 +7,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
-from . import llm
+from . import itsme, llm
 from .cluster import log
 
 LOCAL = {"127.0.0.1", "::1"}
@@ -23,8 +23,15 @@ def make_server(node):
                 "nodes": sorted(({"name": s["name"], "id": s["id"], "addr": s["addr"],
                                   "working": s.get("working"), "model": s.get("model"),
                                   "score": s.get("score"), "stats": s.get("stats"),
+                                  "bot": bool(s.get("bot")),
                                   "leader": s["id"] == cluster.leader}
                                  for s in alive.values()), key=lambda s: s["name"])}
+
+    def itsme_state(_):
+        # Hanya pemimpin yang menjalankan bot yang membagikan memori/otak/akses It's Me.
+        if not (cluster.is_leader and cluster.bot):
+            return None
+        return {"files": itsme.read_state(cfg)}
 
     def summarize(p):
         if not node.profile["model"] or not cluster.working:
@@ -65,6 +72,7 @@ def make_server(node):
         "/status": status,
         "/ask": ask,
         "/recent": lambda p: {"docs": store.recent(int(p.get("limit", 10)))},
+        "/itsme-state": itsme_state,
     }
 
     class Handler(BaseHTTPRequestHandler):
