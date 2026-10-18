@@ -1,6 +1,11 @@
-# It's Me Node - pemasang satu baris.
-#   irm https://raw.githubusercontent.com/OBKENTUNG01/itsme-node/main/install.ps1 | iex
-# Kode gabung bisa diisi lewat variabel lingkungan ITSME_JOIN supaya tidak ditanya.
+# It's Me Node - pemasang satu baris, tanpa pertanyaan.
+#   Komputer pertama:
+#     irm https://raw.githubusercontent.com/OBKENTUNG01/itsme-node/main/install.ps1 | iex
+#   Komputer berikutnya: kirim /pasang ke bot It's Me di Telegram, lalu tempel
+#   satu baris yang dibalas bot. Isinya kode undangan sekali pakai (ITSME_INVITE);
+#   kode gabung, token bot, dan pengaturan It's Me diambil sendiri dari komputer
+#   yang mengundang, dan It's Me ikut dipasang.
+# Kode gabung manual tetap bisa lewat variabel lingkungan ITSME_JOIN.
 
 $ErrorActionPreference = "Stop"
 $Repo = "OBKENTUNG01/itsme-node"
@@ -13,10 +18,13 @@ function Install-ItsMeNode {
         [Security.Principal.WindowsBuiltInRole]::Administrator)
     if (-not $admin) {
         Say "Meminta izin Administrator (untuk memasang program dan membuka port)..."
-        $cmd = "`$env:ITSME_JOIN='$env:ITSME_JOIN'; irm $Url | iex; Read-Host 'Tekan Enter untuk menutup'"
+        $cmd = "`$env:ITSME_JOIN='$env:ITSME_JOIN'; `$env:ITSME_INVITE='$env:ITSME_INVITE'; irm $Url | iex; Read-Host 'Tekan Enter untuk menutup'"
         Start-Process powershell -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -Command $cmd"
         return
     }
+
+    # Undangan dari /pasang: "KODE" atau "KODE~tskey-auth-..." (izin Tailscale sekali pakai).
+    $invite, $tsKey = "$env:ITSME_INVITE".Trim() -split "~", 2
 
     $Root = Join-Path $env:LOCALAPPDATA "ItsMeNode"
     $App = Join-Path $Root "app"
@@ -62,8 +70,40 @@ function Install-ItsMeNode {
     if (-not (Test-Path $ts)) { Winget "Tailscale.Tailscale" }
     & $ts status *> $null
     if ($LASTEXITCODE -ne 0) {
-        Say "Login Tailscale dengan akun yang SAMA seperti komputer lain (browser akan terbuka)."
-        & $ts up | Out-Host
+        if ($tsKey) {
+            Say "Menyambungkan Tailscale otomatis ..."
+            & $ts up --authkey=$tsKey --unattended | Out-Host
+        } else {
+            Say "Login Tailscale dengan akun yang SAMA seperti komputer lain (browser akan terbuka, cukup pilih akunnya)."
+            & $ts up --unattended | Out-Host
+        }
+    }
+
+    # 3b. Tukar kode undangan dengan komputer yang mengundang (lewat Tailscale)
+    $joined = $null
+    if ($invite) {
+        Say "Mencari komputer yang mengundang di jaringan Tailscale ..."
+        $body = @{ code = $invite; name = $env:COMPUTERNAME } | ConvertTo-Json
+        $deadline = (Get-Date).AddMinutes(3)
+        while (-not $joined -and (Get-Date) -lt $deadline) {
+            $st = & $ts status --json 2>$null | Out-String | ConvertFrom-Json -ErrorAction SilentlyContinue
+            $ips = @($st.Peer.PSObject.Properties.Value | Where-Object Online |
+                     ForEach-Object { $_.TailscaleIPs | Where-Object { $_ -notmatch ":" } | Select-Object -First 1 })
+            foreach ($ip in $ips) {
+                try {
+                    $r = Invoke-RestMethod "http://${ip}:7171/invite" -Method Post -Body $body `
+                        -ContentType "application/json" -TimeoutSec 5
+                    if ($r.join_code) { $joined = $r; break }
+                } catch { }
+            }
+            if (-not $joined) { Start-Sleep 5 }
+        }
+        if (-not $joined) {
+            throw ("Kode undangan tidak diterima. Kemungkinan: kodenya kedaluwarsa atau sudah dipakai, " +
+                   "komputer yang mengundang sedang mati, atau Tailscale login dengan akun lain. " +
+                   "Kirim /pasang lagi ke bot lalu tempel perintah barunya.")
+        }
+        Say "Diterima oleh $($joined.from)."
     }
 
     # 4. Kode program
@@ -84,9 +124,8 @@ function Install-ItsMeNode {
     # 5. Kode gabung
     $cfgPath = Join-Path $Data "config.json"
     $cfg = if (Test-Path $cfgPath) { Get-Content $cfgPath -Raw | ConvertFrom-Json } else { [pscustomobject]@{} }
-    if (-not $cfg.join_code) {
-        $code = $env:ITSME_JOIN
-        if (-not $code) { $code = Read-Host "Kode gabung (kosongkan kalau ini komputer PERTAMA)" }
+    if ($joined -or -not $cfg.join_code) {
+        $code = if ($joined) { $joined.join_code } else { $env:ITSME_JOIN }
         if (-not $code) {
             $code = & $py -c "import secrets;print(secrets.token_urlsafe(18))"
             $first = $true
@@ -119,17 +158,30 @@ function Install-ItsMeNode {
     Write-Host "Status   : & '$py' -m inode status   (jalankan di folder $App)"
 
     # 8. Bot Telegram It's Me ikut pemimpin
-    if (Test-Path (Join-Path $HOME "ItsMe\.env")) {
-        Say "It's Me terdeteksi: bot Telegram otomatis aktif di komputer yang sedang menjadi pemimpin."
-    } else {
+    $itsmeDir = Join-Path $HOME "ItsMe"
+    $itsmeEnv = Join-Path $itsmeDir ".env"
+    $envItems = @(if ($joined.env) { $joined.env.PSObject.Properties })
+    if ($envItems.Count -and -not (Test-Path $itsmeEnv)) {
+        # Pengaturan bot dari komputer yang mengundang (token bot, pemilik, kunci otak).
+        New-Item -ItemType Directory -Force $itsmeDir | Out-Null
+        $lines = $envItems | ForEach-Object { "$($_.Name)=$($_.Value)" }
+        [IO.File]::WriteAllLines($itsmeEnv, [string[]]$lines, (New-Object Text.UTF8Encoding($false)))
+    }
+    if ($envItems.Count) {
         Write-Host ""
-        Write-Host "Supaya komputer ini bisa menggantikan bot Telegram It's Me saat pemimpin mati,"
-        Write-Host "pasang juga It's Me dengan token bot yang SAMA seperti komputer lain:"
-        Write-Host "  irm https://raw.githubusercontent.com/OBKENTUNG01/website/main/jarvis/setup.ps1 | iex"
+        Say "Memasang It's Me (bot Telegram) dengan pengaturan yang sama ..."
+        $env:ITSME_NO_SLEEP = "1"
+        $env:ITSME_UNATTENDED = "1"
+        irm "https://raw.githubusercontent.com/OBKENTUNG01/website/main/jarvis/setup.ps1" | iex
+        Write-Host ""
+        Say "Selesai! Komputer ini sudah bergabung. Bot Telegram aktif di komputer pemimpin, komputer lain siaga."
+    } elseif (Test-Path $itsmeEnv) {
+        Say "It's Me terdeteksi: bot Telegram otomatis aktif di komputer yang sedang menjadi pemimpin."
     }
     if ($first) {
         Write-Host ""
-        Write-Host "KODE GABUNG (simpan, pakai di komputer lain): $code" -ForegroundColor Yellow
+        Write-Host "Ini komputer PERTAMA. Untuk menambah komputer lain, kirim /pasang ke bot It's Me" -ForegroundColor Yellow
+        Write-Host "di Telegram, lalu tempel satu baris yang dibalas bot di PowerShell komputer itu." -ForegroundColor Yellow
     }
 }
 

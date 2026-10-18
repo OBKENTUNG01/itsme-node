@@ -8,6 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
 from . import itsme, llm
+from .invites import Invites
 from .cluster import log
 
 LOCAL = {"127.0.0.1", "::1"}
@@ -15,6 +16,7 @@ LOCAL = {"127.0.0.1", "::1"}
 
 def make_server(node):
     cfg, cluster, store = node.cfg, node.cluster, node.store
+    invites = Invites()
 
     def status(_):
         alive = cluster.alive()
@@ -63,6 +65,22 @@ def make_server(node):
                 answer = f"(model lokal gagal menjawab: {e})"
         return {"answer": answer, "docs": best}
 
+    def invite_new(p):
+        # Hanya dari komputer ini (bot It's Me lewat 127.0.0.1), lihat _handle.
+        invites.add(p.get("code"), p.get("ttl"), p.get("env"))
+        return {"ok": True}
+
+    def invite(p):
+        # Satu-satunya jalur tanpa kode gabung: komputer baru menukar kode undangan.
+        try:
+            env = invites.redeem(p.get("code"))
+        except PermissionError as e:
+            return 429, {"error": str(e)}
+        if env is None:
+            return 404, {"error": "kode undangan salah, sudah dipakai, atau kedaluwarsa"}
+        log("info", "undangan dipakai oleh", str(p.get("name", "?"))[:60])
+        return 200, {"join_code": cfg["join_code"], "env": env, "from": cfg["name"]}
+
     routes = {
         "/gossip": lambda p: (cluster.learn(p), cluster._gossip_payload())[1],
         "/links": lambda p: {"added": store.add_links([tuple(r) for r in p.get("rows", [])])},
@@ -95,6 +113,15 @@ def make_server(node):
 
         def _handle(self, payload):
             path = urlsplit(self.path).path
+            if path == "/invite":
+                return self._reply(*invite(payload))
+            if path == "/invite-new":
+                if self.client_address[0] not in LOCAL:
+                    return self._reply(403, {"error": "hanya dari komputer ini"})
+                try:
+                    return self._reply(200, invite_new(payload))
+                except (ValueError, TypeError) as e:
+                    return self._reply(400, {"error": str(e)})
             if not self._authorized():
                 return self._reply(401, {"error": "kode gabung salah"})
             fn = routes.get(path)

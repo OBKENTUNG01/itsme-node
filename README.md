@@ -6,16 +6,28 @@ tetap hidup walau komputer utamanya mati.
 
 ## Pasang (PowerShell)
 
+**Komputer pertama** (yang sudah menjalankan bot It's Me):
+
 ```powershell
 irm https://raw.githubusercontent.com/OBKENTUNG01/itsme-node/main/install.ps1 | iex
 ```
 
-- Komputer pertama: kosongkan kode gabung, lalu catat kode yang ditampilkan.
-- Komputer berikutnya: masukkan kode gabung yang sama, dan login Tailscale dengan akun yang sama.
-- Supaya komputer bisa menggantikan bot Telegram, pasang juga
-  [It's Me](https://github.com/OBKENTUNG01/website/tree/main/jarvis) di komputer itu
-  dengan **token bot yang sama**:
-  `irm https://raw.githubusercontent.com/OBKENTUNG01/website/main/jarvis/setup.ps1 | iex`
+**Komputer berikutnya: tanpa mengetik apa pun.**
+
+1. Kirim `/pasang` ke bot It's Me di Telegram.
+2. Bot membalas satu baris, misalnya
+   `$env:ITSME_INVITE='K7PM-2XQA-9RTD'; irm https://raw.githubusercontent.com/OBKENTUNG01/itsme-node/main/install.ps1 | iex`.
+   Tempel baris itu di PowerShell komputer baru, lalu klik **Ya** saat Windows meminta izin Administrator.
+3. Selesai. Pemasang menyambung ke Tailscale, mencari komputer yang mengundang, lalu menerima
+   kode gabung dan pengaturan bot (token, pemilik, kunci otak). Node **dan** It's Me terpasang
+   sekaligus; memori, otak, dan mode akses ikut disalin oleh node.
+
+- Kode undangan hanya berlaku sekali dan hangus dalam 30 menit. Tebakan salah dibatasi.
+- Tanpa API key Tailscale, browser terbuka sekali untuk login Tailscale: pilih akun yang sama.
+  Simpan API key Tailscale (`tskey-api-…`, buat di login.tailscale.com → Settings → Keys) dengan
+  `/kunci tskey-api-…` di Telegram, maka baris dari `/pasang` ikut membawa izin Tailscale sekali
+  pakai dan komputer baru tersambung tanpa login sama sekali.
+- Kode gabung manual tetap bisa: `$env:ITSME_JOIN='kode'; irm …/install.ps1 | iex`.
 
 ## Cara kerja
 
@@ -50,4 +62,6 @@ Konfigurasi: `%LOCALAPPDATA%\ItsMeNode\data\config.json` (idle_minutes, always_w
 model, leader_priority, leader_start, leader_stop, itsme_dir, dll).
 
 API lokal (tanpa token dari 127.0.0.1): `GET http://127.0.0.1:7171/status`,
-`POST /ask {"q": "..."}`, `GET /recent`.
+`POST /ask {"q": "..."}`, `GET /recent`, `POST /invite-new {"code", "ttl", "env"}`
+(hanya dari 127.0.0.1, dipakai `/pasang`). `POST /invite {"code"}` adalah satu-satunya
+jalur tanpa kode gabung: menukar kode undangan sekali pakai.
