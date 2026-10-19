@@ -1,12 +1,4 @@
 # It's Me Node - pemasang satu baris, tanpa pertanyaan.
-#   Komputer pertama:
-#     irm https://raw.githubusercontent.com/OBKENTUNG01/itsme-node/main/install.ps1 | iex
-#   Komputer berikutnya: kirim /pasang ke bot It's Me di Telegram, lalu tempel
-#   satu baris yang dibalas bot. Isinya kode undangan sekali pakai (ITSME_INVITE);
-#   kode gabung, token bot, dan pengaturan It's Me diambil sendiri dari komputer
-#   yang mengundang, dan It's Me ikut dipasang.
-# Kode gabung manual tetap bisa lewat variabel lingkungan ITSME_JOIN.
-
 $ErrorActionPreference = "Stop"
 $Repo = "OBKENTUNG01/itsme-node"
 $Url = "https://raw.githubusercontent.com/$Repo/main/install.ps1"
@@ -37,7 +29,6 @@ function Install-ItsMeNode {
     }
     function Has($exe) { [bool](Get-Command$exe -ErrorAction SilentlyContinue) }
     
-    # [PERBAIKAN]: Nama fungsi diubah untuk menghindari konflik dengan program winget bawaan Windows
     function Install-WingetPackage($id) {
         Say "Memasang $id ..."
         winget.exe install --id $id -e --silent --accept-package-agreements --accept-source-agreements | Out-Host
@@ -163,7 +154,6 @@ function Install-ItsMeNode {
     $itsmeEnv = Join-Path$itsmeDir ".env"
     $envItems = @(if ($joined.env) {$joined.env.PSObject.Properties })
     if ($envItems.Count -and -not (Test-Path$itsmeEnv)) {
-        # Pengaturan bot dari komputer yang mengundang (token bot, pemilik, kunci otak).
         New-Item -ItemType Directory -Force $itsmeDir | Out-Null
         $lines =$envItems | ForEach-Object { "$($_.Name)=$($_.Value)" }
         [IO.File]::WriteAllLines($itsmeEnv, [string[]]$lines, (New-Object Text.UTF8Encoding($false)))
