@@ -1,8 +1,10 @@
 # It's Me Node
 
 Jaringan komputer setara (tanpa hub) yang meriset internet memakai model lokal
-(Ollama) saat komputer sedang tidak dipakai, dan menjaga bot Telegram It's Me
-tetap hidup walau komputer utamanya mati.
+(Ollama) saat komputer sedang tidak dipakai, menjaga bot Telegram It's Me tetap
+hidup walau komputer utamanya mati, dan membiarkanmu **melihat & mengendalikan
+layar** serta **menelusuri berkas** semua komputer yang terhubung (seperti
+remote desktop, lewat Tailscale, tanpa aplikasi tambahan).
 
 ## Pasang (PowerShell)
 
@@ -49,6 +51,28 @@ irm https://raw.githubusercontent.com/OBKENTUNG01/itsme-node/main/install.ps1 | 
 - Setiap hasil riset disalin ke satu node lain sebagai cadangan.
 - Pembaruan otomatis dari repo ini setiap 30 menit.
 
+## Lihat & kendalikan komputer, telusuri berkas
+
+Di komputer mana pun yang menjalankan node, buka di browser:
+
+```
+http://localhost:7171/
+```
+
+- **Layar** — pilih komputer di atas, lihat layarnya diperbarui berkala, dan centang
+  **Kendalikan** untuk memakai mouse & keyboard-nya seperti remote desktop. Hanya layar
+  utama; ini gambar berkala jadi ada sedikit jeda.
+- **Berkas** — telusuri folder komputer itu, lihat isi berkas teks, dan unduh. Berkas
+  rahasia (`.env`, kunci, token, login browser/aplikasi, `.ssh`, `.claude`) ditandai dan
+  **tidak bisa dibuka/diunduh**.
+- Dari HP: lewat bot It's Me kirim `/layar <nama>` untuk foto layar sebuah komputer, atau
+  buka halaman di atas lewat Tailscale/Cloudflare (lihat `PANDUAN_AKSES_JARAK_JAUH.md`).
+
+Halaman ini hanya bisa dibuka **dari komputer itu sendiri** (127.0.0.1). Komputer yang
+kamu lihat menyajikan layar/berkasnya; komputer tempat kamu duduk meneruskan permintaan
+ke sana lewat Tailscale dengan kode gabung bersama — jadi komputer di jaringan/lokasi
+berbeda pun tetap bisa diakses.
+
 ## Perintah (di folder `%LOCALAPPDATA%\ItsMeNode\app`)
 
 ```
@@ -65,3 +89,7 @@ API lokal (tanpa token dari 127.0.0.1): `GET http://127.0.0.1:7171/status`,
 `POST /ask {"q": "..."}`, `GET /recent`, `POST /invite-new {"code", "ttl", "env"}`
 (hanya dari 127.0.0.1, dipakai `/pasang`). `POST /invite {"code"}` adalah satu-satunya
 jalur tanpa kode gabung: menukar kode undangan sekali pakai.
+
+Akses jarak jauh (butuh kode gabung dari node lain; `?node=<id>` meneruskan ke komputer itu):
+`GET /screen?w=1280` (PNG layar), `POST /input {events:[…]}` (mouse/keyboard),
+`GET /fs/list?path=…`, `GET /fs/read?path=…`, `GET /fs/download?path=…`.

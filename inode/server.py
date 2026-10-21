@@ -4,14 +4,20 @@ import concurrent.futures
 import hmac
 import json
 import threading
+import urllib.error
+import urllib.parse
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
-from . import itsme, llm
+from . import itsme, llm, remote, viewer
 from .invites import Invites
 from .cluster import log
 
 LOCAL = {"127.0.0.1", "::1"}
+# Rute akses jarak jauh (layar, input, berkas). Boleh menyebut ?node=<id> untuk
+# komputer lain; node ini meneruskannya ke sana lewat Tailscale.
+REMOTE_PATHS = {"/screen", "/input", "/fs/list", "/fs/read", "/fs/download"}
 
 
 def make_server(node):
@@ -81,6 +87,59 @@ def make_server(node):
         log("info", "undangan dipakai oleh", str(p.get("name", "?"))[:60])
         return 200, {"join_code": cfg["join_code"], "env": env, "from": cfg["name"]}
 
+    # --- akses jarak jauh: layar, input, berkas (lokal atau diteruskan ke node lain) ---
+    def _addr_of(node_id):
+        return (cluster.alive().get(node_id) or {}).get("addr")
+
+    def _node_get(addr, path, params):
+        """GET ke node lain dengan token; kembalikan (kode, content-type, bytes, disposition)."""
+        url = f"http://{addr}{path}?" + urllib.parse.urlencode(params)
+        req = urllib.request.Request(url, headers={"Authorization": "Bearer " + cfg.token})
+        try:
+            with urllib.request.urlopen(req, timeout=25) as r:
+                return r.status, r.headers.get("Content-Type", ""), r.read(), \
+                    r.headers.get("Content-Disposition", "")
+        except urllib.error.HTTPError as e:
+            return e.code, e.headers.get("Content-Type", "application/json"), e.read(), ""
+
+    def remote_route(path, p):
+        """Kembalikan ('json', code, obj) atau ('raw', code, ctype, bytes, headers)."""
+        node_id = p.get("node")
+        if node_id and node_id != cluster.id:
+            addr = _addr_of(node_id)
+            if not addr:
+                return ("json", 404, {"error": "komputer tidak ditemukan atau sedang mati"})
+            rest = {k: v for k, v in p.items() if k not in ("node", "t")}
+            if path == "/input":
+                res = cluster.rpc(addr, "/input", rest, timeout=25)
+                return ("json", 200 if res else 502, res or {"error": "komputer tujuan tak terjawab"})
+            code, ctype, body, disp = _node_get(addr, path, rest)
+            headers = {"Content-Disposition": disp} if disp else {}
+            return ("raw", code, ctype or "application/octet-stream", body, headers)
+
+        # komputer ini sendiri
+        if path == "/screen":
+            try:
+                w = int(p.get("w", 1280) or 1280)
+            except ValueError:
+                w = 1280
+            png = remote.capture_png(max(320, min(1920, w)))
+            if not png:
+                return ("json", 503, {"error": "layar tidak bisa diambil (bukan Windows / tidak ada sesi layar)"})
+            return ("raw", 200, "image/png", png, {"Cache-Control": "no-store"})
+        if path == "/input":
+            return ("json", 200, {"sent": remote.inject(p.get("events") or [])})
+        if path == "/fs/list":
+            return ("json", 200, remote.fs_list(p.get("path", "")))
+        if path == "/fs/read":
+            return ("json", 200, remote.fs_read(p.get("path", "")))
+        if path == "/fs/download":
+            name, data = remote.fs_file(p.get("path", ""))
+            quoted = urllib.parse.quote(name)
+            return ("raw", 200, "application/octet-stream", data,
+                    {"Content-Disposition": f"attachment; filename*=UTF-8''{quoted}"})
+        return ("json", 404, {"error": "tidak ada"})
+
     routes = {
         "/gossip": lambda p: (cluster.learn(p), cluster._gossip_payload())[1],
         "/links": lambda p: {"added": store.add_links([tuple(r) for r in p.get("rows", [])])},
@@ -111,8 +170,38 @@ def make_server(node):
             self.end_headers()
             self.wfile.write(body)
 
+        def _reply_raw(self, code, ctype, body, headers=None):
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            for k, v in (headers or {}).items():
+                self.send_header(k, v)
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _send_remote(self, path, payload):
+            try:
+                res = remote_route(path, payload)
+            except PermissionError as e:
+                return self._reply(403, {"error": str(e)})
+            except FileNotFoundError as e:
+                return self._reply(404, {"error": str(e)})
+            except (NotADirectoryError, ValueError) as e:
+                return self._reply(400, {"error": str(e)})
+            except Exception as e:  # noqa: BLE001
+                log("remote error", path, e)
+                return self._reply(500, {"error": str(e)})
+            if res[0] == "raw":
+                _, code, ctype, body, headers = res
+                return self._reply_raw(code, ctype, body, headers)
+            return self._reply(res[1], res[2])
+
         def _handle(self, payload):
             path = urlsplit(self.path).path
+            if path in ("/", "/remote"):
+                if self.client_address[0] not in LOCAL:
+                    return self._reply(403, {"error": "halaman ini hanya dari komputer ini"})
+                return self._reply_raw(200, "text/html; charset=utf-8", viewer.PAGE.encode())
             if path == "/invite":
                 return self._reply(*invite(payload))
             if path == "/invite-new":
@@ -124,6 +213,8 @@ def make_server(node):
                     return self._reply(400, {"error": str(e)})
             if not self._authorized():
                 return self._reply(401, {"error": "kode gabung salah"})
+            if path in REMOTE_PATHS:
+                return self._send_remote(path, payload)
             fn = routes.get(path)
             if not fn:
                 return self._reply(404, {"error": "tidak ada"})
