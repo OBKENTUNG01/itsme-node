@@ -53,7 +53,10 @@ irm https://raw.githubusercontent.com/OBKENTUNG01/itsme-node/main/install.ps1 | 
 
 ## Lihat & kendalikan komputer, telusuri berkas
 
-Di komputer mana pun yang menjalankan node, buka di browser:
+Kalau It's Me (bot) terpasang, pakai **dashboard** It's Me (`http://localhost:8750`)
+→ tab **🖥️ Komputer** — satu tempat untuk layar, kendali, dan berkas semua komputer.
+Node ini juga menyajikan halaman mandiri yang sama (cadangan, mis. untuk komputer
+tanpa dashboard):
 
 ```
 http://localhost:7171/
