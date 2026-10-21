@@ -1,3 +1,12 @@
+# It's Me Node - pemasang satu baris, tanpa pertanyaan.
+#   Komputer pertama:
+#     irm https://raw.githubusercontent.com/OBKENTUNG01/itsme-node/main/install.ps1 | iex
+#   Komputer berikutnya: kirim /pasang ke bot It's Me di Telegram, lalu tempel
+#   satu baris yang dibalas bot. Isinya kode undangan sekali pakai (ITSME_INVITE);
+#   kode gabung, token bot, dan pengaturan It's Me diambil sendiri dari komputer
+#   yang mengundang, dan It's Me ikut dipasang.
+# Kode gabung manual tetap bisa lewat variabel lingkungan ITSME_JOIN.
+
 $ErrorActionPreference = "Stop"
 $Repo = "OBKENTUNG01/itsme-node"
 $Url = "https://raw.githubusercontent.com/$Repo/main/install.ps1"
@@ -9,38 +18,39 @@ function Install-ItsMeNode {
         [Security.Principal.WindowsBuiltInRole]::Administrator)
     if (-not $admin) {
         Say "Meminta izin Administrator (untuk memasang program dan membuka port)..."
-        $cmd = "`$env:ITSME_JOIN='$env:ITSME_JOIN'; `$env:ITSME_INVITE='$env:ITSME_INVITE'; irm$Url | iex; Read-Host 'Tekan Enter untuk menutup'"
+        $cmd = "`$env:ITSME_JOIN='$env:ITSME_JOIN'; `$env:ITSME_INVITE='$env:ITSME_INVITE'; irm $Url | iex; Read-Host 'Tekan Enter untuk menutup'"
         Start-Process powershell -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -Command $cmd"
         return
     }
 
+    # Undangan dari /pasang: "KODE" atau "KODE~tskey-auth-..." (izin Tailscale sekali pakai).
     $invite, $tsKey = "$env:ITSME_INVITE".Trim() -split "~", 2
 
-    $Root = Join-Path$env:LOCALAPPDATA "ItsMeNode"
-    $App = Join-Path$Root "app"
-    $Data = Join-Path$Root "data"
-    New-Item -ItemType Directory -Force $App,$Data | Out-Null
+    $Root = Join-Path $env:LOCALAPPDATA "ItsMeNode"
+    $App = Join-Path $Root "app"
+    $Data = Join-Path $Root "data"
+    New-Item -ItemType Directory -Force $App, $Data | Out-Null
 
     function Refresh-Path {
         $env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
                     [Environment]::GetEnvironmentVariable("Path", "User")
     }
-    function Has($exe) { [bool](Get-Command$exe -ErrorAction SilentlyContinue) }
-    
+    function Has($exe) { [bool](Get-Command $exe -ErrorAction SilentlyContinue) }
+    # Nama fungsi sengaja bukan "Winget" supaya tidak bentrok dengan winget bawaan.
     function Install-WingetPackage($id) {
         Say "Memasang $id ..."
         winget.exe install --id $id -e --silent --accept-package-agreements --accept-source-agreements | Out-Host
         Refresh-Path
     }
-    
-    if (-not (Has "winget.exe")) { throw "winget tidak ditemukan. Perbarui 'App Installer' dari Microsoft Store dulu." }
+    if (-not (Has winget.exe)) { throw "winget tidak ditemukan. Perbarui 'App Installer' dari Microsoft Store dulu." }
 
+    # 1. Python
     function Find-Python {
         $cands = @(Get-ChildItem "$env:LOCALAPPDATA\Programs\Python\Python3*\python.exe",
                                  "$env:ProgramFiles\Python3*\python.exe" -ErrorAction SilentlyContinue |
                    Sort-Object FullName -Descending | ForEach-Object FullName)
-        foreach ($p in$cands) {
-            $v = &$p -c "import sys;print(sys.version_info>=(3,10))" 2>$null
+        foreach ($p in $cands) {
+            $v = & $p -c "import sys;print(sys.version_info>=(3,10))" 2>$null
             if ($v -eq "True") { return $p }
         }
         return $null
@@ -50,14 +60,16 @@ function Install-ItsMeNode {
     if (-not $py) { throw "Python gagal dipasang." }
     Say "Python: $py"
 
+    # 2. Ollama (model lokal) - dilewati kalau RAM < 6 GB
     $ram = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)
     $ollama = "$env:LOCALAPPDATA\Programs\Ollama\ollama.exe"
-    if ($ram -ge 6 -and -not (Test-Path$ollama) -and -not (Has ollama)) { Install-WingetPackage "Ollama.Ollama" }
+    if ($ram -ge 6 -and -not (Test-Path $ollama) -and -not (Has ollama)) { Install-WingetPackage "Ollama.Ollama" }
     if ($ram -lt 6) { Say "RAM $ram GB: komputer ini menjadi penjelajah tanpa model." }
 
+    # 3. Tailscale (menyambungkan semua komputer)
     $ts = "$env:ProgramFiles\Tailscale\tailscale.exe"
     if (-not (Test-Path $ts)) { Install-WingetPackage "Tailscale.Tailscale" }
-    & $ts status *>$null
+    & $ts status *> $null
     if ($LASTEXITCODE -ne 0) {
         if ($tsKey) {
             Say "Menyambungkan Tailscale otomatis ..."
@@ -68,14 +80,17 @@ function Install-ItsMeNode {
         }
     }
 
-    $joined =$null
+    # 3b. Tukar kode undangan dengan komputer yang mengundang (lewat Tailscale)
+    $joined = $null
     if ($invite) {
         Say "Mencari komputer yang mengundang di jaringan Tailscale ..."
-        $body = @{ code =$invite; name = $env:COMPUTERNAME } \vert{} ConvertTo-Json$deadline = (Get-Date).AddMinutes(3)
-        while (-not $joined -and (Get-Date) -lt $deadline) {$st = & $ts status --json 2>$null | Out-String | ConvertFrom-Json -ErrorAction SilentlyContinue
+        $body = @{ code = $invite; name = $env:COMPUTERNAME } | ConvertTo-Json
+        $deadline = (Get-Date).AddMinutes(3)
+        while (-not $joined -and (Get-Date) -lt $deadline) {
+            $st = & $ts status --json 2>$null | Out-String | ConvertFrom-Json -ErrorAction SilentlyContinue
             $ips = @($st.Peer.PSObject.Properties.Value | Where-Object Online |
-                     ForEach-Object { $_.TailscaleIPs \vert{} Where-Object {$_ -notmatch ":" } | Select-Object -First 1 })
-            foreach ($ip in$ips) {
+                     ForEach-Object { $_.TailscaleIPs | Where-Object { $_ -notmatch ":" } | Select-Object -First 1 })
+            foreach ($ip in $ips) {
                 try {
                     $r = Invoke-RestMethod "http://${ip}:7171/invite" -Method Post -Body $body `
                         -ContentType "application/json" -TimeoutSec 5
@@ -92,6 +107,7 @@ function Install-ItsMeNode {
         Say "Diterima oleh $($joined.from)."
     }
 
+    # 4. Kode program
     Say "Mengunduh It's Me Node ..."
     $sha = (Invoke-RestMethod "https://api.github.com/repos/$Repo/commits/main" -Headers @{ "User-Agent" = "itsme-node" }).sha
     $zip = Join-Path $env:TEMP "itsme-node.zip"
@@ -106,6 +122,7 @@ function Install-ItsMeNode {
     Set-Content (Join-Path $App "python.txt") $py -NoNewline
     Remove-Item $zip, $tmp -Recurse -Force -ErrorAction SilentlyContinue
 
+    # 5. Kode gabung
     $cfgPath = Join-Path $Data "config.json"
     $cfg = if (Test-Path $cfgPath) { Get-Content $cfgPath -Raw | ConvertFrom-Json } else { [pscustomobject]@{} }
     if ($joined -or -not $cfg.join_code) {
@@ -118,18 +135,20 @@ function Install-ItsMeNode {
         [IO.File]::WriteAllText($cfgPath, ($cfg | ConvertTo-Json -Depth 5))
     }
 
+    # 6. Buka port 7171 hanya untuk jaringan Tailscale
     if (-not (Get-NetFirewallRule -DisplayName "ItsMe Node" -ErrorAction SilentlyContinue)) {
         New-NetFirewallRule -DisplayName "ItsMe Node" -Direction Inbound -Protocol TCP -LocalPort 7171 `
             -RemoteAddress 100.64.0.0/10 -Action Allow | Out-Null
     }
 
+    # 7. Jalan otomatis saat login (tersembunyi)
     $startup = [Environment]::GetFolderPath("Startup")
-    $vbs = Join-Path$startup "ItsMeNode.vbs"
-    $run = Join-Path$App "run.ps1"
+    $vbs = Join-Path $startup "ItsMeNode.vbs"
+    $run = Join-Path $App "run.ps1"
     Set-Content $vbs ("CreateObject(""WScript.Shell"").Run ""powershell -NoProfile -WindowStyle Hidden " +
         "-ExecutionPolicy Bypass -File """"$run"""""", 0, False") -Encoding ASCII
     Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='powershell.exe'" |
-        Where-Object { $_.CommandLine -like "*ItsMeNode*" -and $_.ProcessId -ne$PID } |
+        Where-Object { $_.CommandLine -like "*ItsMeNode*" -and $_.ProcessId -ne $PID } |
         ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     Start-Process wscript.exe "`"$vbs`""
 
@@ -137,14 +156,16 @@ function Install-ItsMeNode {
     Say "Selesai! Node berjalan di latar belakang dan otomatis menyala setiap login."
     Say "Tes kemampuan & unduh model berjalan di belakang (bisa beberapa menit)."
     Write-Host "Log      : $App\logs\node.log"
-    Write-Host "Status   : & '$py' -m inode status   (jalankan di folder$App)"
+    Write-Host "Status   : & '$py' -m inode status   (jalankan di folder $App)"
 
-    $itsmeDir = Join-Path$HOME "ItsMe"
-    $itsmeEnv = Join-Path$itsmeDir ".env"
-    $envItems = @(if ($joined.env) {$joined.env.PSObject.Properties })
-    if ($envItems.Count -and -not (Test-Path$itsmeEnv)) {
+    # 8. Bot Telegram It's Me ikut pemimpin
+    $itsmeDir = Join-Path $HOME "ItsMe"
+    $itsmeEnv = Join-Path $itsmeDir ".env"
+    $envItems = @(if ($joined.env) { $joined.env.PSObject.Properties })
+    if ($envItems.Count -and -not (Test-Path $itsmeEnv)) {
+        # Pengaturan bot dari komputer yang mengundang (token bot, pemilik, kunci otak).
         New-Item -ItemType Directory -Force $itsmeDir | Out-Null
-        $lines =$envItems | ForEach-Object { "$($_.Name)=$($_.Value)" }
+        $lines = $envItems | ForEach-Object { "$($_.Name)=$($_.Value)" }
         [IO.File]::WriteAllLines($itsmeEnv, [string[]]$lines, (New-Object Text.UTF8Encoding($false)))
     }
     if ($envItems.Count) {
