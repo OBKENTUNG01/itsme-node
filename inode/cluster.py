@@ -96,7 +96,7 @@ class Cluster:
                 "score": self.profile["score"], "model": self.profile["model"],
                 "working": self.working, "priority": self.cfg["leader_priority"],
                 "bot": self.bot, "leader": self.leader, "epoch": self.epoch,
-                "phase": self.phase,
+                "phase": self.phase, "fingerprint": self.cfg.get("_fingerprint"),
                 "lead_age": time.time() - self.lead_since if self.is_leader else None,
                 "version": VERSION, "started": self.started, "stats": self.store.stats()}
 
@@ -155,6 +155,10 @@ class Cluster:
                 self.peers[s["id"]] = {"state": s, "seen": time.time()}
                 self.addrs.discard(s["addr"])
                 self._ever_heard = True
+            if s.get("fingerprint"):
+                # Ingat sidik jari perangkat keras peer, supaya ia bisa gabung lagi
+                # otomatis kalau nanti OS-nya diinstal ulang (lihat server /enroll).
+                self.store.enroll_device(s["fingerprint"], s.get("name"))
             self._consider_claim(s)
         for a in payload.get("peers", []):
             if a != self.addr and not any(p["state"]["addr"] == a for p in self.peers.values()):

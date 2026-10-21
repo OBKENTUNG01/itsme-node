@@ -20,6 +20,20 @@ LOCAL = {"127.0.0.1", "::1"}
 REMOTE_PATHS = {"/screen", "/input", "/fs/list", "/fs/read", "/fs/download"}
 
 
+def _in_tailnet(ip):
+    """IP di rentang Tailscale (100.64.0.0/10) atau alamat Tailscale IPv6 (fd7a:)."""
+    ip = (ip or "").lower()
+    if ip.startswith("fd7a:"):
+        return True
+    parts = ip.split(".")
+    if len(parts) == 4 and parts[0] == "100":
+        try:
+            return 64 <= int(parts[1]) <= 127
+        except ValueError:
+            return False
+    return False
+
+
 def make_server(node):
     cfg, cluster, store = node.cfg, node.cluster, node.store
     invites = Invites()
@@ -87,6 +101,22 @@ def make_server(node):
         log("info", "undangan dipakai oleh", str(p.get("name", "?"))[:60])
         return 200, {"join_code": cfg["join_code"], "env": env, "from": cfg["name"]}
 
+    def enroll(p, ip):
+        """Komputer yang DULU pernah terdaftar lalu diinstal ulang gabung lagi tanpa
+        kode undangan baru: cukup sidik jari perangkat kerasnya (tetap walau OS
+        diinstal ulang) yang sudah dikenal jaringan, dan ia harus di jaringan Tailscale."""
+        if ip not in LOCAL and not _in_tailnet(ip):
+            return 403, {"error": "hanya dari jaringan Tailscale kamu sendiri"}
+        fp = str(p.get("fingerprint") or "").strip()
+        if not fp:
+            return 400, {"error": "sidik jari kosong"}
+        if not store.is_enrolled(fp):
+            return 404, {"error": "komputer ini belum pernah terdaftar; pakai /pasang sekali dulu"}
+        store.enroll_device(fp, p.get("name"))
+        env = itsme.env_bundle(cfg) if itsme.ready(cfg) else {}
+        log("info", "gabung-ulang otomatis oleh", str(p.get("name", "?"))[:60], fp[:8])
+        return 200, {"join_code": cfg["join_code"], "env": env, "from": cfg["name"]}
+
     # --- akses jarak jauh: layar, input, berkas (lokal atau diteruskan ke node lain) ---
     def _addr_of(node_id):
         return (cluster.alive().get(node_id) or {}).get("addr")
@@ -150,6 +180,8 @@ def make_server(node):
         "/ask": ask,
         "/recent": lambda p: {"docs": store.recent(int(p.get("limit", 10)))},
         "/itsme-state": itsme_state,
+        "/enrolled": lambda p: {"devices": store.enrolled_list()},
+        "/enrolled-merge": lambda p: {"ok": (store.merge_enrolled(p.get("devices")), True)[1]},
     }
 
     class Handler(BaseHTTPRequestHandler):
@@ -204,6 +236,8 @@ def make_server(node):
                 return self._reply_raw(200, "text/html; charset=utf-8", viewer.PAGE.encode())
             if path == "/invite":
                 return self._reply(*invite(payload))
+            if path == "/enroll":
+                return self._reply(*enroll(payload, self.client_address[0]))
             if path == "/invite-new":
                 if self.client_address[0] not in LOCAL:
                     return self._reply(403, {"error": "hanya dari komputer ini"})

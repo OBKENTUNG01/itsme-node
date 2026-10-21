@@ -75,6 +75,18 @@ def sync_itsme(node):
         log("salinan It's Me dari pemimpin diperbarui:", ", ".join(changed))
 
 
+def sync_enrolled(node):
+    """Satukan daftar perangkat terdaftar dengan node lain, supaya semua node ingat
+    komputer yang pernah bergabung (walau komputer itu sedang mati / diinstal ulang)."""
+    c = node.cluster
+    for s in list(c.alive().values()):
+        if s["id"] == c.id:
+            continue
+        res = c.rpc(s["addr"], "/enrolled", timeout=5)
+        if res and res.get("devices"):
+            node.store.merge_enrolled(res["devices"])
+
+
 def run(args):
     cfg = Config(args.data)
     if args.port:
@@ -95,6 +107,10 @@ def run(args):
     prof, fresh = read_profile(cfg)
     node.profile = prof or system.provisional_profile(cfg)
     node.store = Store(cfg.data_dir)
+    # Sidik jari perangkat keras (tetap walau OS diinstal ulang): daftarkan diri,
+    # sebarkan lewat gosip, jadi komputer ini bisa gabung lagi otomatis nanti.
+    cfg["_fingerprint"] = system.machine_fingerprint()
+    node.store.enroll_device(cfg["_fingerprint"], cfg["name"])
     node.cluster = Cluster(cfg, node.profile, node.store, bot=itsme.ready(cfg))
     node.crawler = Crawler(cfg, node.profile, node.cluster, node.store)
     make_server(node)
@@ -110,7 +126,7 @@ def run(args):
         threading.Thread(target=refresh_profile, args=(node, stop, prof is None),
                          daemon=True).start()
 
-    last_update = last_report = last_bot = last_sync = time.time()
+    last_update = last_report = last_bot = last_sync = last_enrolled = time.time()
     try:
         while not stop.is_set():
             now = time.time()
@@ -130,6 +146,9 @@ def run(args):
             if now - last_sync > 20:
                 last_sync = now
                 sync_itsme(node)
+            if now - last_enrolled > 120:
+                last_enrolled = now
+                sync_enrolled(node)
             if now - last_report > 300:
                 last_report = now
                 log(f"status: {node.store.stats()} | node hidup {len(node.cluster.alive())} | "
@@ -159,7 +178,7 @@ def local(args, path, payload=None):
 
 def main():
     ap = argparse.ArgumentParser(prog="inode")
-    ap.add_argument("cmd", choices=["run", "status", "ask", "recent", "code"])
+    ap.add_argument("cmd", choices=["run", "status", "ask", "recent", "code", "fingerprint"])
     ap.add_argument("text", nargs="?")
     ap.add_argument("--data", default=DEFAULT_DATA)
     ap.add_argument("--port", type=int)
@@ -173,6 +192,8 @@ def main():
 
     if args.cmd == "run":
         return run(args)
+    if args.cmd == "fingerprint":
+        return print(system.machine_fingerprint())
     if args.cmd == "code":
         return print(Config(args.data)["join_code"])
     if args.cmd == "status":

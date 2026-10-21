@@ -1,12 +1,15 @@
-"""Info perangkat: RAM, GPU, status menganggur, Tailscale, dan tes kemampuan."""
+"""Info perangkat: RAM, GPU, status menganggur, Tailscale, sidik jari, dan tes."""
 
 import ctypes
+import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import time
+import uuid
 
 from . import llm
 
@@ -21,6 +24,42 @@ def _run(args, timeout=10):
         return out.stdout if out.returncode == 0 else ""
     except (OSError, subprocess.SubprocessError):
         return ""
+
+
+_FINGERPRINT = None
+# Nilai sampah yang sering diisi pabrik, bukan ID asli.
+_FP_JUNK = re.compile(r"^(0{6,}|to be filled|default string|none|not (specified|available)|"
+                      r"system serial number|o\.?e\.?m\.?|00000000-0000-0000-0000-000000000000)$", re.I)
+
+
+def machine_fingerprint():
+    """ID perangkat keras yang TETAP walau OS diinstal ulang (UUID motherboard,
+    serial BIOS/baseboard). Sama sebelum & sesudah install ulang di komputer yang
+    sama, jadi jaringan bisa mengenali komputer yang kembali tanpa kode undangan baru."""
+    global _FINGERPRINT
+    if _FINGERPRINT:
+        return _FINGERPRINT
+    parts = []
+    if IS_WIN:
+        out = _run(["powershell", "-NoProfile", "-Command",
+                    "$p=Get-CimInstance Win32_ComputerSystemProduct;"
+                    "$b=Get-CimInstance Win32_BIOS;$m=Get-CimInstance Win32_BaseBoard;"
+                    "\"$($p.UUID)|$($b.SerialNumber)|$($m.SerialNumber)\""], timeout=25)
+        parts = out.strip().split("|")
+    else:
+        for path in ("/sys/class/dmi/id/product_uuid", "/etc/machine-id",
+                     "/var/lib/dbus/machine-id"):
+            try:
+                with open(path) as f:
+                    parts.append(f.read().strip())
+            except OSError:
+                pass
+    good = [p.strip() for p in parts if p and len(p.strip()) >= 6
+            and not _FP_JUNK.match(p.strip()) and set(p.strip()) - {"0", "-", " "}]
+    if not good:
+        good = ["mac-%012x" % uuid.getnode()]  # cadangan: alamat MAC
+    _FINGERPRINT = hashlib.sha256(("itsme-fp|" + "|".join(sorted(good))).encode()).hexdigest()[:24]
+    return _FINGERPRINT
 
 
 def ram_gb():

@@ -122,8 +122,44 @@ function Install-ItsMeNode {
     Set-Content (Join-Path $App "python.txt") $py -NoNewline
     Remove-Item $zip, $tmp -Recurse -Force -ErrorAction SilentlyContinue
 
-    # 5. Kode gabung
+    # 4b. Gabung-ulang otomatis (install ulang): tanpa kode undangan & belum punya
+    #     kode gabung, komputer ini mungkin DULU terdaftar lalu OS-nya diinstal ulang.
+    #     Sidik jari perangkat kerasnya tetap sama, jadi jaringan mengenalinya kembali.
     $cfgPath = Join-Path $Data "config.json"
+    $hadCode = (Test-Path $cfgPath) -and ((Get-Content $cfgPath -Raw | ConvertFrom-Json).join_code)
+    if (-not $joined -and -not $env:ITSME_JOIN -and -not $hadCode) {
+        Push-Location $App
+        $fp = & $py -m inode fingerprint 2>$null | Select-Object -Last 1
+        Pop-Location
+        if ($fp) { $fp = "$fp".Trim() } else { $fp = "" }
+        $st = & $ts status --json 2>$null | Out-String | ConvertFrom-Json -ErrorAction SilentlyContinue
+        $peers = @($st.Peer.PSObject.Properties.Value | Where-Object Online)
+        if ($fp -and $peers.Count -gt 0) {
+            Say "Mencoba gabung otomatis (komputer mungkin dikenal dari sebelumnya) ..."
+            $body = @{ fingerprint = $fp; name = $env:COMPUTERNAME } | ConvertTo-Json
+            $deadline = (Get-Date).AddSeconds(45)
+            while (-not $joined -and (Get-Date) -lt $deadline) {
+                foreach ($peer in $peers) {
+                    $ip = $peer.TailscaleIPs | Where-Object { $_ -notmatch ":" } | Select-Object -First 1
+                    if (-not $ip) { continue }
+                    try {
+                        $r = Invoke-RestMethod "http://${ip}:7171/enroll" -Method Post -Body $body `
+                            -ContentType "application/json" -TimeoutSec 5
+                        if ($r.join_code) { $joined = $r; break }
+                    } catch { }
+                }
+                if (-not $joined) {
+                    Start-Sleep 4
+                    $st = & $ts status --json 2>$null | Out-String | ConvertFrom-Json -ErrorAction SilentlyContinue
+                    $peers = @($st.Peer.PSObject.Properties.Value | Where-Object Online)
+                }
+            }
+            if ($joined) { Say "Berhasil gabung otomatis dari $($joined.from) - tanpa kode undangan baru." }
+            else { Say "Belum dikenali jaringan; lanjut sebagai komputer baru (pakai /pasang kalau perlu)." }
+        }
+    }
+
+    # 5. Kode gabung
     $cfg = if (Test-Path $cfgPath) { Get-Content $cfgPath -Raw | ConvertFrom-Json } else { [pscustomobject]@{} }
     if ($joined -or -not $cfg.join_code) {
         $code = if ($joined) { $joined.join_code } else { $env:ITSME_JOIN }

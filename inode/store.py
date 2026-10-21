@@ -28,7 +28,43 @@ class Store:
                     title TEXT, summary TEXT, ts REAL, node TEXT);
                 CREATE VIRTUAL TABLE IF NOT EXISTS docs_fts USING fts5(title, summary);
                 CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT);
+                CREATE TABLE IF NOT EXISTS enrolled(fp TEXT PRIMARY KEY, name TEXT, ts REAL);
             """)
+
+    # --- perangkat terdaftar (supaya bisa gabung lagi walau diinstal ulang) ----
+    def enroll_device(self, fp, name=""):
+        if not fp:
+            return
+        with self.lock:
+            self.db.execute(
+                "INSERT INTO enrolled(fp,name,ts) VALUES(?,?,?) ON CONFLICT(fp) "
+                "DO UPDATE SET name=excluded.name, ts=excluded.ts",
+                (fp, (name or "")[:80], time.time()))
+            self.db.commit()
+
+    def is_enrolled(self, fp):
+        with self.lock:
+            return bool(fp and self.db.execute(
+                "SELECT 1 FROM enrolled WHERE fp=?", (fp,)).fetchone())
+
+    def enrolled_list(self):
+        with self.lock:
+            return [{"fp": f, "name": n, "ts": t}
+                    for f, n, t in self.db.execute("SELECT fp,name,ts FROM enrolled")]
+
+    def merge_enrolled(self, rows):
+        """Satukan daftar perangkat dari node lain (ambil yang terbaru)."""
+        with self.lock:
+            for r in rows or []:
+                fp = r.get("fp")
+                if fp:
+                    self.db.execute(
+                        "INSERT INTO enrolled(fp,name,ts) VALUES(?,?,?) ON CONFLICT(fp) "
+                        "DO UPDATE SET name=CASE WHEN excluded.ts > enrolled.ts "
+                        "THEN excluded.name ELSE enrolled.name END, "
+                        "ts=MAX(enrolled.ts, excluded.ts)",
+                        (fp, (r.get("name") or "")[:80], float(r.get("ts") or 0)))
+            self.db.commit()
 
     # --- antrean URL -----------------------------------------------------------
     def add_links(self, rows):

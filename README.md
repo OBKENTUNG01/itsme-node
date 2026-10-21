@@ -31,6 +31,14 @@ irm https://raw.githubusercontent.com/OBKENTUNG01/itsme-node/main/install.ps1 | 
   pakai dan komputer baru tersambung tanpa login sama sekali.
 - Kode gabung manual tetap bisa: `$env:ITSME_JOIN='kode'; irm …/install.ps1 | iex`.
 
+**Install ulang OS? Komputer tidak hilang dari jaringan.** Kalau komputer yang sudah
+terdaftar diinstal ulang Windows-nya, cukup jalankan lagi perintah pemasang pertama
+(tanpa kode undangan baru). Jaringan mengenali komputer itu dari **sidik jari perangkat
+kerasnya** (UUID motherboard/BIOS — tetap sama walau OS baru) dan mengembalikan kode
+gabung + pengaturan bot otomatis. Syaratnya: komputer itu login Tailscale dengan akun
+yang sama dan ada node lain yang online. Sidik jari hanya mengenali komputer yang
+**pernah** terdaftar lewat `/pasang`; komputer baru tetap butuh kode undangan.
+
 ## Cara kerja
 
 - Semua node setara, tidak ada komputer inti. Satu node menjadi **pemimpin**.
@@ -90,8 +98,10 @@ model, leader_priority, leader_start, leader_stop, itsme_dir, dll).
 
 API lokal (tanpa token dari 127.0.0.1): `GET http://127.0.0.1:7171/status`,
 `POST /ask {"q": "..."}`, `GET /recent`, `POST /invite-new {"code", "ttl", "env"}`
-(hanya dari 127.0.0.1, dipakai `/pasang`). `POST /invite {"code"}` adalah satu-satunya
-jalur tanpa kode gabung: menukar kode undangan sekali pakai.
+(hanya dari 127.0.0.1, dipakai `/pasang`). `POST /invite {"code"}` menukar kode undangan
+sekali pakai. `POST /enroll {"fingerprint","name"}` mengembalikan kode gabung untuk komputer
+yang sidik jarinya sudah terdaftar (gabung-ulang setelah install ulang) — hanya dari jaringan
+Tailscale. Keduanya jalur tanpa token kode gabung.
 
 Akses jarak jauh (butuh kode gabung dari node lain; `?node=<id>` meneruskan ke komputer itu):
 `GET /screen?w=1280` (PNG layar), `POST /input {events:[…]}` (mouse/keyboard),

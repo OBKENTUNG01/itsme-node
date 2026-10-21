@@ -6,8 +6,10 @@ komputer pemimpin. Modul ini memberi tahu jaringan apakah komputer ini bisa
 menjadi bot aktif, dan menyalin memori, otak yang dipilih, dan mode akses dari
 pemimpin ke sini, supaya bot tetap sama walau pindah komputer.
 
-Isi .env (token, kunci) tidak pernah dibaca selain untuk memeriksa ada/tidaknya,
-dan tidak pernah dikirim ke node lain.
+Isi .env (token, kunci) hanya dibaca untuk memeriksa ada/tidaknya, KECUALI saat
+komputer yang sudah terdaftar menginstal ulang OS-nya dan minta gabung kembali
+(/enroll): node ini mengirim isi .env itu balik ke komputer tersebut lewat
+Tailscale supaya bot It's Me ikut pulih. Lihat env_bundle().
 """
 
 import os
@@ -15,6 +17,32 @@ import os
 SYNC_FILES = ("memory.md", "brain.json", "access.json")
 MAX_FILE = 256 * 1024
 _OFF = ("0", "false", "no", "off")
+# Kunci .env yang khusus per-komputer (folder, alamat, perangkat keras): tidak
+# ikut dikirim ke komputer lain. Sama dengan daftar di bot (node.py _LOCAL_ONLY).
+_LOCAL_ONLY = {
+    "ITSME_DATA_DIR", "ITSME_DEVICE_NAME", "ITSME_DRIVE_CREDENTIALS", "ITSME_DRIVE_DOWNLOAD_DIR",
+    "ITSME_FOLLOW_NODE", "ITSME_HUB_URL", "ITSME_HUB_SECRET", "ITSME_HUB_HEARTBEAT",
+    "ITSME_LOG_FILE", "ITSME_MEMORY_FILE", "ITSME_NODE_URL", "ITSME_OLLAMA_MODEL",
+    "ITSME_OLLAMA_NUM_CTX", "ITSME_OLLAMA_NUM_GPU", "OLLAMA_URL", "WEBSITE_REPO_DIR",
+}
+
+
+def env_bundle(cfg):
+    """Isi .env bot (token, pemilik, kunci otak) untuk memulihkan It's Me di komputer
+    yang terdaftar tapi diinstal ulang. Kunci khusus per-komputer dibuang."""
+    out = {}
+    try:
+        with open(os.path.join(home(cfg), ".env"), encoding="utf-8-sig") as f:
+            for line in f:
+                key, sep, value = line.strip().partition("=")
+                key = key.strip()
+                if sep and key and not key.startswith("#"):
+                    value = value.strip().strip("'\"").strip()
+                    if value and key not in _LOCAL_ONLY and "\n" not in value:
+                        out[key] = value
+    except OSError:
+        return {}
+    return out
 
 
 def home(cfg):
