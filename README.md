@@ -96,7 +96,10 @@ python -m inode code              tampilkan kode gabung
 ```
 
 Konfigurasi: `%LOCALAPPDATA%\ItsMeNode\data\config.json` (idle_minutes, always_work,
-model, leader_priority, leader_start, leader_stop, itsme_dir, dll).
+model, leader_priority, leader_start, leader_stop, bridge_url, bridge_token,
+tunnel_cmd, dll). `tunnel_cmd` (mis. `cloudflared tunnel run itsme`) dijalankan hanya
+selama node ini pemimpin, supaya alamat publik mengikuti pemimpin saat failover
+(lihat `PANDUAN_AKSES_JARAK_JAUH.md`).
 
 API lokal (tanpa token dari 127.0.0.1): `GET http://127.0.0.1:7171/status`,
 `POST /ask {"q": "..."}`, `GET /recent`, `POST /invite-new {"code", "ttl", "env"}`

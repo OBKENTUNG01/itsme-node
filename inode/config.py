@@ -42,6 +42,12 @@ DEFAULTS = {
     # Kosong = mati (pakai jalur Tailscale biasa).
     "bridge_url": "",
     "bridge_token": "",
+    # Perintah tunnel publik (mis. "cloudflared tunnel run itsme") yang dijalankan
+    # HANYA selama node ini menjadi pemimpin, supaya alamat domain selalu menunjuk
+    # ke pemimpin yang hidup. Saat failover, pemimpin lama mematikan tunnel dan
+    # pemimpin baru menyalakannya, jadi komputer/HP di jaringan lain tersambung lagi
+    # ke alamat yang sama. Kosong = mati.
+    "tunnel_cmd": "",
 }
 
 

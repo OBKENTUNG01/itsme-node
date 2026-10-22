@@ -10,6 +10,7 @@ python -m inode code             tampilkan kode gabung
 import argparse
 import json
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -28,6 +29,45 @@ DEFAULT_DATA = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser
 
 class Node:
     pass
+
+
+def _stop_proc(proc):
+    if proc is None:
+        return
+    try:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+    except OSError:
+        pass
+
+
+def reconcile_tunnel(cfg, is_leader, proc):
+    """Jalankan 'tunnel_cmd' (mis. cloudflared) HANYA selama node ini pemimpin, supaya
+    alamat publik dashboard selalu menunjuk ke pemimpin yang hidup. Begitu kepemimpinan
+    pindah (failover), node lama mematikan tunnel dan pemimpin baru menyalakannya, jadi
+    komputer/HP di jaringan lain otomatis tersambung lagi ke alamat yang sama.
+
+    Kembalikan proses tunnel yang sedang jalan, atau None."""
+    cmd = (cfg.get("tunnel_cmd") or "").strip()
+    if not cmd:
+        return None
+    running = proc is not None and proc.poll() is None
+    if is_leader and not running:
+        try:
+            p = subprocess.Popen(cmd, shell=True)
+            log("tunnel publik dinyalakan (node ini pemimpin)")
+            return p
+        except OSError as e:
+            log("gagal menyalakan tunnel:", e)
+            return None
+    if not is_leader and running:
+        _stop_proc(proc)
+        log("tunnel publik dimatikan (bukan pemimpin lagi)")
+        return None
+    return proc if running else None
 
 
 def read_profile(cfg):
@@ -130,9 +170,13 @@ def run(args):
                          daemon=True).start()
 
     last_update = last_report = last_bot = last_sync = last_enrolled = time.time()
+    tunnel_proc = None
     try:
         while not stop.is_set():
             now = time.time()
+            # Alamat publik (tunnel) mengikuti pemimpin, supaya failover lintas-jaringan
+            # tetap terjangkau di alamat yang sama. Mati bawaan (tunnel_cmd kosong).
+            tunnel_proc = reconcile_tunnel(cfg, node.cluster.is_leader, tunnel_proc)
             idle = system.idle_seconds() >= cfg["idle_minutes"] * 60
             working = cfg["always_work"] or idle
             if working != node.cluster.working:
@@ -167,6 +211,8 @@ def run(args):
     except KeyboardInterrupt:
         stop.set()
         node.cluster.resign()
+    finally:
+        _stop_proc(tunnel_proc)  # jangan tinggalkan tunnel menggantung saat berhenti/menyala ulang
 
 
 def local(args, path, payload=None):
