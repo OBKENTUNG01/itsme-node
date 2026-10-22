@@ -35,6 +35,11 @@ DEFAULTS = {
     "domain_delay": 2.0,
     "workers": 0,  # 0 = otomatis dari skor
     "auto_update": True,
+    # Mode jembatan (tanpa Tailscale): komputer menyambung KELUAR ke dashboard
+    # It's Me (lewat domain/tunnel sendiri) lalu bisa diakses dari dashboard.
+    # Kosong = mati (pakai jalur Tailscale biasa).
+    "bridge_url": "",
+    "bridge_token": "",
 }
 
 

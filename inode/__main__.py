@@ -15,7 +15,7 @@ import threading
 import time
 import urllib.request
 
-from . import VERSION, itsme, llm, system, updater
+from . import VERSION, bridge, itsme, llm, system, updater
 from .cluster import Cluster, log
 from .config import Config
 from .crawler import Crawler
@@ -122,6 +122,9 @@ def run(args):
     stop = threading.Event()
     threading.Thread(target=node.cluster.gossip_loop, args=(stop,), daemon=True).start()
     node.crawler.start(stop)
+    if cfg.get("bridge_url") and cfg.get("bridge_token"):
+        # Jembatan ke dashboard (tanpa Tailscale), lihat bridge.py.
+        threading.Thread(target=bridge.run, args=(cfg, stop), daemon=True).start()
     if not fresh:
         threading.Thread(target=refresh_profile, args=(node, stop, prof is None),
                          daemon=True).start()

@@ -1,4 +1,4 @@
 """It's Me Node: jaringan komputer setara yang meriset internet saat menganggur."""
 
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 REPO = "OBKENTUNG01/itsme-node"
