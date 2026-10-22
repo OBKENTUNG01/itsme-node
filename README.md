@@ -4,7 +4,11 @@ Jaringan komputer setara (tanpa hub) yang meriset internet memakai model lokal
 (Ollama) saat komputer sedang tidak dipakai, menjaga bot Telegram It's Me tetap
 hidup walau komputer utamanya mati, dan membiarkanmu **melihat & mengendalikan
 layar** serta **menelusuri berkas** semua komputer yang terhubung (seperti
-remote desktop, lewat Tailscale, tanpa aplikasi tambahan).
+remote desktop, **tanpa Tailscale/VPN** dan tanpa aplikasi tambahan).
+
+Komputer sejaringan saling menemukan lewat IP LAN; komputer di jaringan/lokasi
+berbeda menyambung **keluar** ke dashboard It's Me (lewat domain/Cloudflare Tunnel
+sendiri), jadi tetap jalan di balik NAT tanpa VPN.
 
 ## Pasang (PowerShell)
 
@@ -18,26 +22,24 @@ irm https://raw.githubusercontent.com/OBKENTUNG01/itsme-node/main/install.ps1 | 
 
 1. Kirim `/pasang` ke bot It's Me di Telegram.
 2. Bot membalas satu baris, misalnya
-   `$env:ITSME_INVITE='K7PM-2XQA-9RTD'; irm https://raw.githubusercontent.com/OBKENTUNG01/itsme-node/main/install.ps1 | iex`.
+   `$env:ITSME_INVITE='K7PM-2XQA-9RTD'; $env:ITSME_HUB='https://domainku.com'; irm https://raw.githubusercontent.com/OBKENTUNG01/itsme-node/main/install.ps1 | iex`.
    Tempel baris itu di PowerShell komputer baru, lalu klik **Ya** saat Windows meminta izin Administrator.
-3. Selesai. Pemasang menyambung ke Tailscale, mencari komputer yang mengundang, lalu menerima
-   kode gabung dan pengaturan bot (token, pemilik, kunci otak). Node **dan** It's Me terpasang
-   sekaligus; memori, otak, dan mode akses ikut disalin oleh node.
+3. Selesai. **Tanpa Tailscale/login apa pun.** Pemasang menukar kode undangan di dashboard Hub
+   (lewat alamat publiknya), menerima kode gabung + token jembatan + pengaturan bot (token, pemilik,
+   kunci otak), lalu menyambung **keluar** ke Hub. Node **dan** It's Me terpasang sekaligus; memori,
+   otak, dan mode akses ikut disalin oleh node. Tailscale yang masih terpasang ikut dicopot.
 
 - Kode undangan hanya berlaku sekali dan hangus dalam 30 menit. Tebakan salah dibatasi.
-- Tanpa API key Tailscale, browser terbuka sekali untuk login Tailscale: pilih akun yang sama.
-  Simpan API key Tailscale (`tskey-api-…`, buat di login.tailscale.com → Settings → Keys) dengan
-  `/kunci tskey-api-…` di Telegram, maka baris dari `/pasang` ikut membawa izin Tailscale sekali
-  pakai dan komputer baru tersambung tanpa login sama sekali.
+- Syaratnya: Hub (komputer yang mengundang) punya alamat publik — buka dashboard lewat
+  domain/Cloudflare Tunnel sendiri lalu isi `ITSME_PUBLIC_URL=https://domainmu` di `.env`-nya
+  (lihat `PANDUAN_AKSES_JARAK_JAUH.md`). Komputer sejaringan juga bisa pakai alamat LAN Hub.
 - Kode gabung manual tetap bisa: `$env:ITSME_JOIN='kode'; irm …/install.ps1 | iex`.
 
 **Install ulang OS? Komputer tidak hilang dari jaringan.** Kalau komputer yang sudah
-terdaftar diinstal ulang Windows-nya, cukup jalankan lagi perintah pemasang pertama
-(tanpa kode undangan baru). Jaringan mengenali komputer itu dari **sidik jari perangkat
-kerasnya** (UUID motherboard/BIOS — tetap sama walau OS baru) dan mengembalikan kode
-gabung + pengaturan bot otomatis. Syaratnya: komputer itu login Tailscale dengan akun
-yang sama dan ada node lain yang online. Sidik jari hanya mengenali komputer yang
-**pernah** terdaftar lewat `/pasang`; komputer baru tetap butuh kode undangan.
+terdaftar diinstal ulang Windows-nya, kirim `/pasang` lagi lalu tempel baris barunya.
+Jaringan mengenali komputer itu dari **sidik jari perangkat kerasnya** (UUID
+motherboard/BIOS — tetap sama walau OS baru) dan mengembalikan kode gabung + pengaturan
+bot otomatis lewat Hub, tanpa kode undangan baru kalau komputer itu **pernah** terdaftar.
 
 ## Cara kerja
 
@@ -77,12 +79,12 @@ http://localhost:7171/
   rahasia (`.env`, kunci, token, login browser/aplikasi, `.ssh`, `.claude`) ditandai dan
   **tidak bisa dibuka/diunduh**.
 - Dari HP: lewat bot It's Me kirim `/layar <nama>` untuk foto layar sebuah komputer, atau
-  buka halaman di atas lewat Tailscale/Cloudflare (lihat `PANDUAN_AKSES_JARAK_JAUH.md`).
+  buka dashboard lewat domain/Cloudflare Tunnel sendiri (lihat `PANDUAN_AKSES_JARAK_JAUH.md`).
 
 Halaman ini hanya bisa dibuka **dari komputer itu sendiri** (127.0.0.1). Komputer yang
 kamu lihat menyajikan layar/berkasnya; komputer tempat kamu duduk meneruskan permintaan
-ke sana lewat Tailscale dengan kode gabung bersama — jadi komputer di jaringan/lokasi
-berbeda pun tetap bisa diakses.
+ke sana lewat jaringan LAN dengan kode gabung bersama, atau — untuk komputer di jaringan
+berbeda — lewat jembatan dashboard It's Me, jadi tetap bisa diakses tanpa VPN.
 
 ## Perintah (di folder `%LOCALAPPDATA%\ItsMeNode\app`)
 
@@ -100,8 +102,9 @@ API lokal (tanpa token dari 127.0.0.1): `GET http://127.0.0.1:7171/status`,
 `POST /ask {"q": "..."}`, `GET /recent`, `POST /invite-new {"code", "ttl", "env"}`
 (hanya dari 127.0.0.1, dipakai `/pasang`). `POST /invite {"code"}` menukar kode undangan
 sekali pakai. `POST /enroll {"fingerprint","name"}` mengembalikan kode gabung untuk komputer
-yang sidik jarinya sudah terdaftar (gabung-ulang setelah install ulang) — hanya dari jaringan
-Tailscale. Keduanya jalur tanpa token kode gabung.
+yang sidik jarinya sudah terdaftar (gabung-ulang setelah install ulang). Keduanya jalur tanpa
+token kode gabung, dan biasanya dipanggil lewat dashboard Hub (`/api/node/invite`, `/api/node/enroll`)
+yang meneruskannya ke sini dari 127.0.0.1 — jadi komputer baru tidak perlu Tailscale.
 
 Akses jarak jauh (butuh kode gabung dari node lain; `?node=<id>` meneruskan ke komputer itu):
 `GET /screen?w=1280` (PNG layar), `POST /input {events:[…]}` (mouse/keyboard),

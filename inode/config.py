@@ -12,10 +12,12 @@ DEFAULTS = {
     "port": 7171,
     # Alamat yang diumumkan ke node lain (kosong = IP Tailscale otomatis).
     "advertise": "",
-    # Alamat node lain yang dihubungi saat mulai, mis. ["100.1.2.3:7171"].
+    # Alamat node lain yang dihubungi saat mulai, mis. ["192.168.1.5:7171"].
     "seeds": [],
-    # Cari node lain otomatis di jaringan Tailscale.
-    "tailscale_discovery": True,
+    # Cari node lain otomatis di jaringan Tailscale. Mati secara bawaan (It's Me
+    # tidak lagi memakai Tailscale); node sejaringan tetap saling temu lewat gosip
+    # IP LAN, node di jaringan lain lewat jembatan ke dashboard (bridge_url).
+    "tailscale_discovery": False,
     # Kode gabung bersama; tanpa ini node tidak saling percaya.
     "join_code": "",
     # Komputer dianggap menganggur setelah tidak ada input sekian menit.

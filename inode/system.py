@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -127,6 +128,19 @@ def tailscale_ip():
         return ""
     out = _run([exe, "ip", "-4"]).strip()
     return out.splitlines()[0] if out else ""
+
+
+def lan_ip():
+    """Alamat IP LAN komputer ini (tanpa Tailscale), untuk node sejaringan. Kosong
+    kalau gagal. Soket UDP ini tidak mengirim apa-apa; hanya memilih antarmuka keluar."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        return s.getsockname()[0]
+    except OSError:
+        return ""
+    finally:
+        s.close()
 
 
 def tailscale_peers():

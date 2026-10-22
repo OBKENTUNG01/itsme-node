@@ -1,10 +1,11 @@
-# It's Me Node - pemasang satu baris, tanpa pertanyaan.
+# It's Me Node - pemasang satu baris, tanpa pertanyaan, TANPA Tailscale.
 #   Komputer pertama:
 #     irm https://raw.githubusercontent.com/OBKENTUNG01/itsme-node/main/install.ps1 | iex
 #   Komputer berikutnya: kirim /pasang ke bot It's Me di Telegram, lalu tempel
-#   satu baris yang dibalas bot. Isinya kode undangan sekali pakai (ITSME_INVITE);
-#   kode gabung, token bot, dan pengaturan It's Me diambil sendiri dari komputer
-#   yang mengundang, dan It's Me ikut dipasang.
+#   satu baris yang dibalas bot. Isinya kode undangan sekali pakai (ITSME_INVITE)
+#   dan alamat Hub (ITSME_HUB). Komputer baru menukar kode itu di dashboard Hub,
+#   mengambil kode gabung + token jembatan + pengaturan bot, lalu menyambung
+#   KELUAR ke Hub (tanpa VPN/Tailscale, tetap jalan di balik NAT).
 # Kode gabung manual tetap bisa lewat variabel lingkungan ITSME_JOIN.
 
 $ErrorActionPreference = "Stop"
@@ -18,18 +19,25 @@ function Install-ItsMeNode {
         [Security.Principal.WindowsBuiltInRole]::Administrator)
     if (-not $admin) {
         Say "Meminta izin Administrator (untuk memasang program dan membuka port)..."
-        $cmd = "`$env:ITSME_JOIN='$env:ITSME_JOIN'; `$env:ITSME_INVITE='$env:ITSME_INVITE'; irm $Url | iex; Read-Host 'Tekan Enter untuk menutup'"
+        $cmd = "`$env:ITSME_JOIN='$env:ITSME_JOIN'; `$env:ITSME_INVITE='$env:ITSME_INVITE'; `$env:ITSME_HUB='$env:ITSME_HUB'; irm $Url | iex; Read-Host 'Tekan Enter untuk menutup'"
         Start-Process powershell -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -Command $cmd"
         return
     }
 
-    # Undangan dari /pasang: "KODE" atau "KODE~tskey-auth-..." (izin Tailscale sekali pakai).
-    $invite, $tsKey = "$env:ITSME_INVITE".Trim() -split "~", 2
+    # Undangan dari /pasang: "KODE" (format lama "KODE~..." tetap diterima; sisanya diabaikan).
+    $invite = ("$env:ITSME_INVITE".Trim() -split "~", 2)[0]
+    $hub = "$env:ITSME_HUB".Trim().TrimEnd("/")
 
     $Root = Join-Path $env:LOCALAPPDATA "ItsMeNode"
     $App = Join-Path $Root "app"
     $Data = Join-Path $Root "data"
     New-Item -ItemType Directory -Force $App, $Data | Out-Null
+    $cfgPath = Join-Path $Data "config.json"
+    # Pemasangan ulang: alamat Hub bisa diambil dari config lama kalau tidak diberikan.
+    if (-not $hub -and (Test-Path $cfgPath)) {
+        $hub = "" + (Get-Content $cfgPath -Raw | ConvertFrom-Json).bridge_url
+        $hub = $hub.TrimEnd("/")
+    }
 
     function Refresh-Path {
         $env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
@@ -66,45 +74,11 @@ function Install-ItsMeNode {
     if ($ram -ge 6 -and -not (Test-Path $ollama) -and -not (Has ollama)) { Install-WingetPackage "Ollama.Ollama" }
     if ($ram -lt 6) { Say "RAM $ram GB: komputer ini menjadi penjelajah tanpa model." }
 
-    # 3. Tailscale (menyambungkan semua komputer)
-    $ts = "$env:ProgramFiles\Tailscale\tailscale.exe"
-    if (-not (Test-Path $ts)) { Install-WingetPackage "Tailscale.Tailscale" }
-    & $ts status *> $null
-    if ($LASTEXITCODE -ne 0) {
-        if ($tsKey) {
-            Say "Menyambungkan Tailscale otomatis ..."
-            & $ts up --authkey=$tsKey --unattended | Out-Host
-        } else {
-            Say "Login Tailscale dengan akun yang SAMA seperti komputer lain (browser akan terbuka, cukup pilih akunnya)."
-            & $ts up --unattended | Out-Host
-        }
-    }
-
-    # 3b. Tukar kode undangan dengan komputer yang mengundang (lewat Tailscale)
-    $joined = $null
-    if ($invite) {
-        Say "Mencari komputer yang mengundang di jaringan Tailscale ..."
-        $body = @{ code = $invite; name = $env:COMPUTERNAME } | ConvertTo-Json
-        $deadline = (Get-Date).AddMinutes(3)
-        while (-not $joined -and (Get-Date) -lt $deadline) {
-            $st = & $ts status --json 2>$null | Out-String | ConvertFrom-Json -ErrorAction SilentlyContinue
-            $ips = @($st.Peer.PSObject.Properties.Value | Where-Object Online |
-                     ForEach-Object { $_.TailscaleIPs | Where-Object { $_ -notmatch ":" } | Select-Object -First 1 })
-            foreach ($ip in $ips) {
-                try {
-                    $r = Invoke-RestMethod "http://${ip}:7171/invite" -Method Post -Body $body `
-                        -ContentType "application/json" -TimeoutSec 5
-                    if ($r.join_code) { $joined = $r; break }
-                } catch { }
-            }
-            if (-not $joined) { Start-Sleep 5 }
-        }
-        if (-not $joined) {
-            throw ("Kode undangan tidak diterima. Kemungkinan: kodenya kedaluwarsa atau sudah dipakai, " +
-                   "komputer yang mengundang sedang mati, atau Tailscale login dengan akun lain. " +
-                   "Kirim /pasang lagi ke bot lalu tempel perintah barunya.")
-        }
-        Say "Diterima oleh $($joined.from)."
+    # 3. Copot Tailscale kalau ada - It's Me tidak memakainya lagi (pakai jembatan ke Hub).
+    $tsExe = "$env:ProgramFiles\Tailscale\tailscale.exe"
+    if ((Test-Path $tsExe) -or (Has tailscale)) {
+        Say "Mencopot Tailscale (tidak dipakai lagi) ..."
+        try { winget.exe uninstall --id Tailscale.Tailscale -e --silent --accept-source-agreements | Out-Host } catch { }
     }
 
     # 4. Kode program
@@ -122,44 +96,48 @@ function Install-ItsMeNode {
     Set-Content (Join-Path $App "python.txt") $py -NoNewline
     Remove-Item $zip, $tmp -Recurse -Force -ErrorAction SilentlyContinue
 
-    # 4b. Gabung-ulang otomatis (install ulang): tanpa kode undangan & belum punya
-    #     kode gabung, komputer ini mungkin DULU terdaftar lalu OS-nya diinstal ulang.
-    #     Sidik jari perangkat kerasnya tetap sama, jadi jaringan mengenalinya kembali.
-    $cfgPath = Join-Path $Data "config.json"
+    # 4b. Tukar kode undangan di dashboard Hub (tanpa Tailscale)
+    $joined = $null
+    if ($invite) {
+        if (-not $hub) {
+            throw "Alamat Hub (ITSME_HUB) kosong. Kirim /pasang lagi ke bot It's Me untuk baris baru."
+        }
+        Say "Menukar kode undangan di Hub ..."
+        $body = @{ code = $invite; name = $env:COMPUTERNAME } | ConvertTo-Json
+        try {
+            $joined = Invoke-RestMethod "$hub/api/node/invite" -Method Post -Body $body `
+                -ContentType "application/json" -TimeoutSec 30
+        } catch {
+            throw ("Kode undangan tidak diterima (" + $_.Exception.Message + "). Kemungkinan: kodenya " +
+                   "kedaluwarsa atau sudah dipakai, atau Hub (dashboard) sedang mati / alamatnya salah. " +
+                   "Kirim /pasang lagi ke bot lalu tempel perintah barunya.")
+        }
+        if (-not $joined.join_code) { throw "Hub tidak mengembalikan kode gabung. Kirim /pasang lagi." }
+        Say "Diterima oleh $($joined.from)."
+    }
+
+    # 4c. Gabung-ulang otomatis (install ulang aplikasi, OS masih sama): tanpa kode
+    #     undangan & belum punya kode gabung, tapi Hub diketahui dari config lama.
+    #     Sidik jari perangkat kerasnya tetap sama, jadi Hub mengenalinya kembali.
     $hadCode = (Test-Path $cfgPath) -and ((Get-Content $cfgPath -Raw | ConvertFrom-Json).join_code)
-    if (-not $joined -and -not $env:ITSME_JOIN -and -not $hadCode) {
+    if (-not $joined -and -not $env:ITSME_JOIN -and -not $hadCode -and $hub) {
         Push-Location $App
         $fp = & $py -m inode fingerprint 2>$null | Select-Object -Last 1
         Pop-Location
         if ($fp) { $fp = "$fp".Trim() } else { $fp = "" }
-        $st = & $ts status --json 2>$null | Out-String | ConvertFrom-Json -ErrorAction SilentlyContinue
-        $peers = @($st.Peer.PSObject.Properties.Value | Where-Object Online)
-        if ($fp -and $peers.Count -gt 0) {
-            Say "Mencoba gabung otomatis (komputer mungkin dikenal dari sebelumnya) ..."
+        if ($fp) {
+            Say "Mencoba gabung otomatis lewat Hub (komputer mungkin dikenal dari sebelumnya) ..."
             $body = @{ fingerprint = $fp; name = $env:COMPUTERNAME } | ConvertTo-Json
-            $deadline = (Get-Date).AddSeconds(45)
-            while (-not $joined -and (Get-Date) -lt $deadline) {
-                foreach ($peer in $peers) {
-                    $ip = $peer.TailscaleIPs | Where-Object { $_ -notmatch ":" } | Select-Object -First 1
-                    if (-not $ip) { continue }
-                    try {
-                        $r = Invoke-RestMethod "http://${ip}:7171/enroll" -Method Post -Body $body `
-                            -ContentType "application/json" -TimeoutSec 5
-                        if ($r.join_code) { $joined = $r; break }
-                    } catch { }
-                }
-                if (-not $joined) {
-                    Start-Sleep 4
-                    $st = & $ts status --json 2>$null | Out-String | ConvertFrom-Json -ErrorAction SilentlyContinue
-                    $peers = @($st.Peer.PSObject.Properties.Value | Where-Object Online)
-                }
-            }
-            if ($joined) { Say "Berhasil gabung otomatis dari $($joined.from) - tanpa kode undangan baru." }
-            else { Say "Belum dikenali jaringan; lanjut sebagai komputer baru (pakai /pasang kalau perlu)." }
+            try {
+                $joined = Invoke-RestMethod "$hub/api/node/enroll" -Method Post -Body $body `
+                    -ContentType "application/json" -TimeoutSec 20
+            } catch { $joined = $null }
+            if ($joined.join_code) { Say "Berhasil gabung otomatis dari $($joined.from) - tanpa kode undangan baru." }
+            else { $joined = $null; Say "Belum dikenali Hub; lanjut sebagai komputer baru (pakai /pasang kalau perlu)." }
         }
     }
 
-    # 5. Kode gabung
+    # 5. Kode gabung + jembatan ke Hub
     $cfg = if (Test-Path $cfgPath) { Get-Content $cfgPath -Raw | ConvertFrom-Json } else { [pscustomobject]@{} }
     if ($joined -or -not $cfg.join_code) {
         $code = if ($joined) { $joined.join_code } else { $env:ITSME_JOIN }
@@ -168,13 +146,17 @@ function Install-ItsMeNode {
             $first = $true
         }
         $cfg | Add-Member -NotePropertyName join_code -NotePropertyValue $code.Trim() -Force
-        [IO.File]::WriteAllText($cfgPath, ($cfg | ConvertTo-Json -Depth 5))
     }
+    if ($hub) { $cfg | Add-Member -NotePropertyName bridge_url -NotePropertyValue $hub -Force }
+    if ($joined.bridge_token) {
+        $cfg | Add-Member -NotePropertyName bridge_token -NotePropertyValue "$($joined.bridge_token)" -Force
+    }
+    [IO.File]::WriteAllText($cfgPath, ($cfg | ConvertTo-Json -Depth 5))
 
-    # 6. Buka port 7171 hanya untuk jaringan Tailscale
+    # 6. Buka port 7171 hanya untuk jaringan lokal (LAN); jembatan ke Hub menyambung keluar.
     if (-not (Get-NetFirewallRule -DisplayName "ItsMe Node" -ErrorAction SilentlyContinue)) {
         New-NetFirewallRule -DisplayName "ItsMe Node" -Direction Inbound -Protocol TCP -LocalPort 7171 `
-            -RemoteAddress 100.64.0.0/10 -Action Allow | Out-Null
+            -RemoteAddress LocalSubnet -Action Allow | Out-Null
     }
 
     # 7. Jalan otomatis saat login (tersembunyi)

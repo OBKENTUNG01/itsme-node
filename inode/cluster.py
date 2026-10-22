@@ -75,7 +75,9 @@ class Cluster:
     def _my_addr(self):
         if self.cfg["advertise"]:
             return self.cfg["advertise"]
-        ip = system.tailscale_ip() or "127.0.0.1"
+        # Tanpa Tailscale, pakai IP LAN supaya node sejaringan tetap saling temu;
+        # node di jaringan lain memakai jembatan ke dashboard (bridge.py).
+        ip = system.tailscale_ip() or system.lan_ip() or "127.0.0.1"
         return f"{ip}:{self.cfg['port']}"
 
     # --- RPC -------------------------------------------------------------------
