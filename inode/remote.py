@@ -13,7 +13,6 @@ import re
 import struct
 import sys
 import threading
-import time
 import zlib
 
 IS_WIN = sys.platform == "win32"
