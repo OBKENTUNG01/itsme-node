@@ -170,7 +170,9 @@ MODELS = [
 
 def pick_model(ram, vram):
     for name, need_ram, need_vram in MODELS:
-        if vram >= need_vram:
+        # RAM juga harus cukup: dulu hanya VRAM yang diperiksa, jadi mesin dengan
+        # GPU besar tapi RAM kecil bisa dipilihkan model yang tidak muat.
+        if vram >= need_vram and ram >= need_ram:
             return name
     # Tanpa GPU: model kecil supaya tidak terlalu lambat di CPU.
     if ram >= 10:
