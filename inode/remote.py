@@ -248,6 +248,14 @@ def inject(events):
                 vk = ord(name.upper())
             if vk is None:
                 continue
+            if e.get("down") or e.get("up"):
+                # Tahan/lepas tanpa klik (Ctrl, Shift, Alt, Win): sama seperti remote
+                # desktop sungguhan, pengubah tetap turun selama tombol ditahan.
+                down = not e.get("up")
+                for m in mods:
+                    key_vk(_VK[m], down)
+                key_vk(vk, down)
+                continue
             for m in mods:
                 key_vk(_VK[m], True)
             key_vk(vk, True)
