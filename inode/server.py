@@ -1,5 +1,6 @@
 """Server HTTP node: dipakai node lain (gosip, tautan, rangkuman) dan pemilik (status, tanya)."""
 
+import base64
 import concurrent.futures
 import hmac
 import ipaddress
@@ -18,7 +19,7 @@ from .cluster import log
 LOCAL = {"127.0.0.1", "::1"}
 # Rute akses jarak jauh (layar, input, berkas). Boleh menyebut ?node=<id> untuk
 # komputer lain; node ini meneruskannya ke sana lewat Tailscale.
-REMOTE_PATHS = {"/screen", "/input", "/fs/list", "/fs/read", "/fs/download"}
+REMOTE_PATHS = {"/screen", "/input", "/fs/list", "/fs/read", "/fs/download", "/fs/write"}
 
 
 # Jaringan lokal: sepercaya Tailscale untuk gabung-ulang (satu rumah/kantor).
@@ -169,8 +170,8 @@ def make_server(node):
             if not addr:
                 return ("json", 404, {"error": "komputer tidak ditemukan atau sedang mati"})
             rest = {k: v for k, v in p.items() if k not in ("node", "t")}
-            if path == "/input":
-                res = cluster.rpc(addr, "/input", rest, timeout=25)
+            if path in ("/input", "/fs/write"):
+                res = cluster.rpc(addr, path, rest, timeout=25)
                 return ("json", 200 if res else 502, res or {"error": "komputer tujuan tak terjawab"})
             code, ctype, body, disp = _node_get(addr, path, rest)
             headers = {"Content-Disposition": disp} if disp else {}
@@ -192,6 +193,14 @@ def make_server(node):
             return ("json", 200, remote.fs_list(p.get("path", "")))
         if path == "/fs/read":
             return ("json", 200, remote.fs_read(p.get("path", "")))
+        if path == "/fs/write":
+            raw = p.get("b64") or ""
+            try:
+                data = base64.b64decode(raw, validate=True)
+            except (ValueError, TypeError):
+                return ("json", 400, {"error": "isi berkas rusak (base64)"})
+            res = remote.fs_write(p.get("path", ""), data)
+            return ("json", 200 if res.get("ok") else 400, res)
         if path == "/fs/download":
             name, data = remote.fs_file(p.get("path", ""))
             quoted = urllib.parse.quote(name)

@@ -329,6 +329,22 @@ def fs_read(path, max_bytes=1_000_000):
             "truncated": size > len(raw), "text": text}
 
 
+def fs_write(path, data, max_bytes=100_000_000):
+    """Tulis berkas di komputer ini (dipakai unggah dari dashboard). Kembalikan info."""
+    target = os.path.abspath(os.path.expanduser(path or ""))
+    if not path or len(data) > max_bytes:
+        return {"error": "berkas terlalu besar atau nama kosong"}
+    if is_secret(target):
+        return {"error": "menolak menulis berkas rahasia (.env, token, kunci)"}
+    try:
+        os.makedirs(os.path.dirname(target) or ".", exist_ok=True)
+        with open(target, "wb") as f:
+            f.write(data)
+        return {"ok": True, "path": target, "size": len(data)}
+    except OSError as exc:
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
 def fs_file(path, max_bytes=100_000_000):
     """(nama, bytes) untuk diunduh. Menolak berkas rahasia & yang terlalu besar."""
     path = os.path.abspath(path or "")
