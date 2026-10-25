@@ -54,6 +54,16 @@ class InTailnetTest(unittest.TestCase):
             self.assertFalse(server._in_tailnet(ip), ip)
 
 
+class InLanTest(unittest.TestCase):
+    def test_local_networks(self):
+        for ip in ("192.168.1.5", "10.1.2.3", "172.16.0.9", "169.254.1.1", "fe80::1", "fd00::5"):
+            self.assertTrue(server._in_lan(ip), ip)
+
+    def test_public_networks(self):
+        for ip in ("8.8.8.8", "1.1.1.1", "104.16.0.1", "2001:db8::1", "", "bukan-ip"):
+            self.assertFalse(server._in_lan(ip), ip)
+
+
 class Cfg(dict):
     def __init__(self, port, botdir=None):
         super().__init__(port=port, node_id="me", name="PC-INI",
@@ -110,11 +120,36 @@ class EnrollEndpointTest(unittest.TestCase):
         self.addCleanup(self.srv.shutdown)
         self.base = f"http://127.0.0.1:{self.srv.server_address[1]}"
 
-    def post(self, path, obj):
+    def post(self, path, obj, extra=None):
+        headers = {"Content-Type": "application/json"}
+        headers.update(extra or {})
         req = urllib.request.Request(self.base + path, data=json.dumps(obj).encode(),
-                                     headers={"Content-Type": "application/json"})
+                                     headers=headers)
         with urllib.request.urlopen(req, timeout=10) as r:
             return r.status, json.loads(r.read())
+
+    def test_proxy_cannot_smuggle_public_ip_into_enroll(self):
+        """Dashboard meneruskan IP asli: permintaan dari internet ditolak, LAN tetap boleh.
+
+        Tanpa ini penjaga /enroll selalu melihat 127.0.0.1 (peer = dashboard sendiri),
+        jadi jalur publik bisa memanen token bot + kata sandi + kunci API.
+        """
+        self.store.enroll_device("fp-lama", "Laptop")
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            self.post("/enroll", {"fingerprint": "fp-lama", "name": "Laptop"},
+                      {"X-Itsme-Client-IP": "8.8.8.8"})
+        self.assertEqual(cm.exception.code, 403)
+        code, res = self.post("/enroll", {"fingerprint": "fp-lama", "name": "Laptop"},
+                              {"X-Itsme-Client-IP": "192.168.1.20"})
+        self.assertEqual(code, 200)
+        self.assertEqual(res["env"]["TELEGRAM_BOT_TOKEN"], "123:abc")
+
+    def test_spoofed_header_ignored_for_non_local_peer(self):
+        """Header hanya dipercaya dari peer lokal (dashboard), bukan dari internet."""
+        hdr = {"X-Itsme-Client-IP": "127.0.0.1"}
+        self.assertEqual(server.client_ip("8.8.8.8", hdr), "8.8.8.8")   # spoof ditolak
+        self.assertEqual(server.client_ip("127.0.0.1", hdr), "127.0.0.1")  # dari dashboard
+        self.assertEqual(server.client_ip("127.0.0.1", {}), "127.0.0.1")
 
     def test_unknown_fingerprint_refused(self):
         with self.assertRaises(urllib.error.HTTPError) as cm:
