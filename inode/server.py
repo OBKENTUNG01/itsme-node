@@ -2,6 +2,7 @@
 
 import concurrent.futures
 import hmac
+import ipaddress
 import json
 import threading
 import urllib.error
@@ -18,6 +19,30 @@ LOCAL = {"127.0.0.1", "::1"}
 # Rute akses jarak jauh (layar, input, berkas). Boleh menyebut ?node=<id> untuk
 # komputer lain; node ini meneruskannya ke sana lewat Tailscale.
 REMOTE_PATHS = {"/screen", "/input", "/fs/list", "/fs/read", "/fs/download"}
+
+
+# Jaringan lokal: sepercaya Tailscale untuk gabung-ulang (satu rumah/kantor).
+_LAN_NETS = tuple(ipaddress.ip_network(n) for n in (
+    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16",
+    "fc00::/7", "fe80::/10"))
+
+
+def client_ip(peer, headers):
+    """IP pemanggil sebenarnya. Header hanya dipercaya bila peer-nya lokal (dashboard)."""
+    if peer in LOCAL:
+        fwd = (headers.get("X-Itsme-Client-IP") or "").strip()
+        if fwd:
+            return fwd
+    return peer
+
+
+def _in_lan(ip):
+    """IP di jaringan lokal (LAN/link-local), bukan internet publik."""
+    try:
+        addr = ipaddress.ip_address((ip or "").strip())
+    except ValueError:
+        return False
+    return any(addr in net for net in _LAN_NETS)
 
 
 def _in_tailnet(ip):
@@ -105,8 +130,12 @@ def make_server(node):
         """Komputer yang DULU pernah terdaftar lalu diinstal ulang gabung lagi tanpa
         kode undangan baru: cukup sidik jari perangkat kerasnya (tetap walau OS
         diinstal ulang) yang sudah dikenal jaringan, dan ia harus di jaringan Tailscale."""
-        if ip not in LOCAL and not _in_tailnet(ip):
-            return 403, {"error": "hanya dari jaringan Tailscale kamu sendiri"}
+        if ip not in LOCAL and not _in_tailnet(ip) and not _in_lan(ip):
+            # Penjaga ini dulu MATI: dashboard meneruskan permintaan dari 127.0.0.1,
+            # jadi setiap panggilan lewat tunnel terlihat "lokal". Sekarang dashboard
+            # mengirim IP asli di X-Itsme-Client-IP (hanya dipercaya dari peer lokal).
+            return 403, {"error": "gabung-ulang otomatis hanya dari jaringan lokal/Tailscale. "
+                                  "Dari internet pakai kode undangan (/pasang)."}
         fp = str(p.get("fingerprint") or "").strip()
         if not fp:
             return 400, {"error": "sidik jari kosong"}
@@ -188,6 +217,9 @@ def make_server(node):
         def log_message(self, *a):
             pass
 
+        def _client_ip(self):
+            return client_ip(self.client_address[0], self.headers)
+
         def _authorized(self):
             if self.client_address[0] in LOCAL:
                 return True
@@ -231,15 +263,15 @@ def make_server(node):
         def _handle(self, payload):
             path = urlsplit(self.path).path
             if path in ("/", "/remote"):
-                if self.client_address[0] not in LOCAL:
+                if self._client_ip() not in LOCAL:
                     return self._reply(403, {"error": "halaman ini hanya dari komputer ini"})
                 return self._reply_raw(200, "text/html; charset=utf-8", viewer.PAGE.encode())
             if path == "/invite":
                 return self._reply(*invite(payload))
             if path == "/enroll":
-                return self._reply(*enroll(payload, self.client_address[0]))
+                return self._reply(*enroll(payload, self._client_ip()))
             if path == "/invite-new":
-                if self.client_address[0] not in LOCAL:
+                if self._client_ip() not in LOCAL:
                     return self._reply(403, {"error": "hanya dari komputer ini"})
                 try:
                     return self._reply(200, invite_new(payload))
