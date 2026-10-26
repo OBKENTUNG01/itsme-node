@@ -71,6 +71,20 @@ class FsTest(unittest.TestCase):
         self.assertEqual(d["text"], "halo dunia")
         self.assertFalse(d["binary"])
 
+    def test_symlink_ke_rahasia_ditolak(self):
+        """Tautan bernama polos yang menunjuk .env tidak boleh lolos."""
+        link = os.path.join(self.d, "catatan.txt")
+        try:
+            os.symlink(os.path.join(self.d, ".env"), link)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"symlink tidak didukung: {exc}")
+        with self.assertRaises(PermissionError):
+            remote.fs_read(link)
+        with self.assertRaises(PermissionError):
+            remote.fs_file(link)
+        hasil = remote.fs_write(link, b"x")
+        self.assertIn("error", hasil)
+
     def test_read_secret_refused(self):
         with self.assertRaises(PermissionError):
             remote.fs_read(os.path.join(self.d, ".env"))

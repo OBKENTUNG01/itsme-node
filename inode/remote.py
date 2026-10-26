@@ -33,6 +33,11 @@ def is_secret(path):
     return bool(_SECRET.search(base) or _SECRET_DIR.search(path))
 
 
+def _target(path):
+    """Path sebenarnya (symlink diselesaikan) supaya is_secret tak bisa diakali."""
+    return os.path.realpath(os.path.abspath(os.path.expanduser(path or "")))
+
+
 # =============================== LAYAR =======================================
 def _png(width, height, rgba):
     """Encode RGBA (baris dari atas ke bawah) jadi PNG, hanya pakai zlib."""
@@ -309,7 +314,7 @@ def fs_list(path):
 
 def fs_read(path, max_bytes=1_000_000):
     """Isi berkas teks untuk pratinjau. Menolak berkas rahasia & biner besar."""
-    path = os.path.abspath(path or "")
+    path = _target(path)
     if not os.path.isfile(path):
         raise FileNotFoundError("berkas tidak ada")
     if is_secret(path):
@@ -331,7 +336,7 @@ def fs_read(path, max_bytes=1_000_000):
 
 def fs_write(path, data, max_bytes=100_000_000):
     """Tulis berkas di komputer ini (dipakai unggah dari dashboard). Kembalikan info."""
-    target = os.path.abspath(os.path.expanduser(path or ""))
+    target = _target(path)
     if not path or len(data) > max_bytes:
         return {"error": "berkas terlalu besar atau nama kosong"}
     if is_secret(target):
@@ -347,7 +352,7 @@ def fs_write(path, data, max_bytes=100_000_000):
 
 def fs_file(path, max_bytes=100_000_000):
     """(nama, bytes) untuk diunduh. Menolak berkas rahasia & yang terlalu besar."""
-    path = os.path.abspath(path or "")
+    path = _target(path)
     if not os.path.isfile(path):
         raise FileNotFoundError("berkas tidak ada")
     if is_secret(path):
