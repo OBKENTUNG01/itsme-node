@@ -38,6 +38,14 @@ def _target(path):
     return os.path.realpath(os.path.abspath(os.path.expanduser(path or "")))
 
 
+def _hardlinked(path):
+    """True bila berkas punya nama lain (hardlink) -> nama aslinya tak bisa diperiksa."""
+    try:
+        return os.stat(path).st_nlink > 1
+    except OSError:
+        return False
+
+
 # =============================== LAYAR =======================================
 def _png(width, height, rgba):
     """Encode RGBA (baris dari atas ke bawah) jadi PNG, hanya pakai zlib."""
@@ -319,6 +327,8 @@ def fs_read(path, max_bytes=1_000_000):
         raise FileNotFoundError("berkas tidak ada")
     if is_secret(path):
         raise PermissionError("berkas rahasia tidak boleh dibuka")
+    if _hardlinked(path):
+        raise PermissionError("berkas ini hardlink; namanya bisa menyembunyikan berkas rahasia")
     size = os.path.getsize(path)
     with open(path, "rb") as f:
         raw = f.read(max_bytes)
@@ -341,6 +351,8 @@ def fs_write(path, data, max_bytes=100_000_000):
         return {"error": "berkas terlalu besar atau nama kosong"}
     if is_secret(target):
         return {"error": "menolak menulis berkas rahasia (.env, token, kunci)"}
+    if _hardlinked(target):
+        return {"error": "berkas ini hardlink; menulisnya bisa menimpa berkas rahasia"}
     try:
         os.makedirs(os.path.dirname(target) or ".", exist_ok=True)
         with open(target, "wb") as f:
@@ -357,6 +369,8 @@ def fs_file(path, max_bytes=100_000_000):
         raise FileNotFoundError("berkas tidak ada")
     if is_secret(path):
         raise PermissionError("berkas rahasia tidak boleh diunduh")
+    if _hardlinked(path):
+        raise PermissionError("berkas ini hardlink; namanya bisa menyembunyikan berkas rahasia")
     if os.path.getsize(path) > max_bytes:
         raise ValueError("berkas terlalu besar untuk diunduh lewat jaringan")
     with open(path, "rb") as f:
