@@ -46,30 +46,6 @@ def _in_lan(ip):
     return any(addr in net for net in _LAN_NETS)
 
 
-# Jaringan lokal: sepercaya Tailscale untuk gabung-ulang (satu rumah/kantor).
-_LAN_NETS = tuple(ipaddress.ip_network(n) for n in (
-    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16",
-    "fc00::/7", "fe80::/10"))
-
-
-def client_ip(peer, headers):
-    """IP pemanggil sebenarnya. Header hanya dipercaya bila peer-nya lokal (dashboard)."""
-    if peer in LOCAL:
-        fwd = (headers.get("X-Itsme-Client-IP") or "").strip()
-        if fwd:
-            return fwd
-    return peer
-
-
-def _in_lan(ip):
-    """IP di jaringan lokal (LAN/link-local), bukan internet publik."""
-    try:
-        addr = ipaddress.ip_address((ip or "").strip())
-    except ValueError:
-        return False
-    return any(addr in net for net in _LAN_NETS)
-
-
 def _in_tailnet(ip):
     """IP di rentang Tailscale (100.64.0.0/10) atau alamat Tailscale IPv6 (fd7a:)."""
     ip = (ip or "").lower()
