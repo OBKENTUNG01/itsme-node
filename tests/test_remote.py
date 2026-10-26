@@ -71,6 +71,21 @@ class FsTest(unittest.TestCase):
         self.assertEqual(d["text"], "halo dunia")
         self.assertFalse(d["binary"])
 
+    def test_hardlink_ke_rahasia_ditolak(self):
+        """Hardlink bernama polos tidak bisa dibedakan realpath -> harus ditolak."""
+        link = os.path.join(self.d, "foto.txt")
+        try:
+            os.link(os.path.join(self.d, ".env"), link)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"hardlink tidak didukung: {exc}")
+        with self.assertRaises(PermissionError):
+            remote.fs_read(link)
+        with self.assertRaises(PermissionError):
+            remote.fs_file(link)
+        self.assertIn("error", remote.fs_write(link, b"x"))
+        with open(os.path.join(self.d, ".env"), encoding="utf-8") as f:
+            self.assertEqual(f.read(), "TOKEN=rahasia")  # isi asli tidak tertimpa
+
     def test_symlink_ke_rahasia_ditolak(self):
         """Tautan bernama polos yang menunjuk .env tidak boleh lolos."""
         link = os.path.join(self.d, "catatan.txt")
