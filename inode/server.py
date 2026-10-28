@@ -113,7 +113,7 @@ def make_server(node):
 
     def invite_new(p):
         # Hanya dari komputer ini (bot It's Me lewat 127.0.0.1), lihat _handle.
-        invites.add(p.get("code"), p.get("ttl"), p.get("env"))
+        invites.add(p.get("code"), p.get("ttl"), p.get("env"), bool(p.get("reusable")))
         return {"ok": True}
 
     def invite(p):

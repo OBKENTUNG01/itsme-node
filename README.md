@@ -30,6 +30,11 @@ irm https://raw.githubusercontent.com/OBKENTUNG01/itsme-node/main/install.ps1 | 
    otak, dan mode akses ikut disalin oleh node. Tailscale yang masih terpasang ikut dicopot.
 
 - Kode undangan hanya berlaku sekali dan hangus dalam 30 menit. Tebakan salah dibatasi.
+- Mau satu tautan yang sama dipakai untuk BEBERAPA komputer (tidak hangus setelah
+  dipakai sekali)? Kirim **`/pasang_tetap`** (bukan `/pasang`) — berlaku sampai 30 hari,
+  atau sampai `/pasang_tetap` dikirim lagi (tautan lama langsung tak berlaku). ⚠️ Siapa
+  pun yang punya tautan itu bisa ikut gabung selama masih berlaku — beda dari `/pasang`
+  yang otomatis hangus begitu dipakai sekali.
 - Syaratnya: Hub (komputer yang mengundang) punya alamat publik — buka dashboard lewat
   domain/Cloudflare Tunnel sendiri lalu isi `ITSME_PUBLIC_URL=https://domainmu` di `.env`-nya
   (lihat `PANDUAN_AKSES_JARAK_JAUH.md`). Komputer sejaringan juga bisa pakai alamat LAN Hub.

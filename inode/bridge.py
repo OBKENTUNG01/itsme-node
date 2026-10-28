@@ -32,13 +32,22 @@ def _post_bytes(url, body, ctype, timeout):
 
 
 def run(cfg, stop):
-    base = (cfg.get("bridge_url") or "").rstrip("/")
-    token = cfg.get("bridge_token") or ""
-    name = cfg.get("name") or "Komputer"
-    if not base or not token:
+    # base/token/name dibaca ULANG tiap putaran (bukan sekali di awal) supaya kalau
+    # alamat Hub berubah (mis. pemimpin baru, domain tetap baru dipasang) dan sesuatu
+    # memperbarui config.json, jembatan ikut pindah tanpa perlu It's Me Node dinyalakan
+    # ulang. Catatan jujur: ini TIDAK membuat jembatan otomatis "menemukan" alamat baru
+    # sendiri - PUNYA alamat baru itu dulu di config.json (mis. lewat domain tetap yang
+    # memang tidak berubah saat failover) adalah syaratnya; lihat PANDUAN_AKSES_JARAK_JAUH.md.
+    if not (cfg.get("bridge_url") or "").rstrip("/") or not cfg.get("bridge_token"):
         return
-    log("mode jembatan: menyambung ke dashboard", base)
+    log("mode jembatan: menyambung ke dashboard", (cfg.get("bridge_url") or "").rstrip("/"))
     while not stop.is_set():
+        base = (cfg.get("bridge_url") or "").rstrip("/")
+        token = cfg.get("bridge_token") or ""
+        name = cfg.get("name") or "Komputer"
+        if not base or not token:
+            stop.wait(5)
+            continue
         caps = ["fs"] + (["screen", "input"] if remote.IS_WIN else [])
         try:
             cmd = _post(base + "/api/hp/poll",
