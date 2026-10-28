@@ -5,6 +5,7 @@ python -m inode status           lihat semua node di jaringan
 python -m inode ask "pertanyaan" tanya basis pengetahuan seluruh jaringan
 python -m inode recent           hasil riset terbaru di node ini
 python -m inode code             tampilkan kode gabung
+python -m inode wake "nama"      bangunkan komputer itu (Wake-on-LAN, lihat wol.py)
 """
 
 import argparse
@@ -151,6 +152,9 @@ def run(args):
     # sebarkan lewat gosip, jadi komputer ini bisa gabung lagi otomatis nanti.
     cfg["_fingerprint"] = system.machine_fingerprint()
     node.store.enroll_device(cfg["_fingerprint"], cfg["name"])
+    # Alamat MAC komputer ini, disebarkan lewat gosip & diingat tetangga LAN-nya,
+    # supaya mereka bisa membangunkannya (Wake-on-LAN) kalau nanti ia dimatikan.
+    cfg["_mac"] = system.mac_address()
     node.cluster = Cluster(cfg, node.profile, node.store, bot=itsme.ready(cfg))
     node.crawler = Crawler(cfg, node.profile, node.cluster, node.store)
     make_server(node)
@@ -164,7 +168,7 @@ def run(args):
     node.crawler.start(stop)
     if cfg.get("bridge_url") and cfg.get("bridge_token"):
         # Jembatan ke dashboard (tanpa Tailscale), lihat bridge.py.
-        threading.Thread(target=bridge.run, args=(cfg, stop), daemon=True).start()
+        threading.Thread(target=bridge.run, args=(cfg, stop, node.store), daemon=True).start()
     if not fresh:
         threading.Thread(target=refresh_profile, args=(node, stop, prof is None),
                          daemon=True).start()
@@ -231,7 +235,7 @@ def local(args, path, payload=None):
 
 def main():
     ap = argparse.ArgumentParser(prog="inode")
-    ap.add_argument("cmd", choices=["run", "status", "ask", "recent", "code", "fingerprint"])
+    ap.add_argument("cmd", choices=["run", "status", "ask", "recent", "code", "fingerprint", "wake"])
     ap.add_argument("text", nargs="?")
     ap.add_argument("--data", default=DEFAULT_DATA)
     ap.add_argument("--port", type=int)
@@ -267,6 +271,10 @@ def main():
         print(r["answer"] or "(tanpa jawaban model; sumber terkait di bawah)")
         for i, d in enumerate(r["docs"], 1):
             print(f"[{i}] {d['title']} - {d['url']}")
+        return
+    if args.cmd == "wake":
+        r = local(args, "/wake", {"name": args.text or ""})
+        print(f"terkirim ke {r['mac']}" if r.get("ok") else f"gagal: {r.get('error', '?')}")
 
 
 if __name__ == "__main__":

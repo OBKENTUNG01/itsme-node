@@ -93,6 +93,28 @@ kamu lihat menyajikan layar/berkasnya; komputer tempat kamu duduk meneruskan per
 ke sana lewat jaringan LAN dengan kode gabung bersama, atau — untuk komputer di jaringan
 berbeda — lewat jembatan dashboard It's Me, jadi tetap bisa diakses tanpa VPN.
 
+## Menyalakan komputer yang mati (Wake-on-LAN)
+
+Komputer yang terdaftar tapi sedang **mati** (bukan cuma menganggur) bisa dicoba
+dibangunkan dari dashboard It's Me (tab 🖥️ Komputer, tombol **⚡ Nyalakan** pada
+komputer yang tampil "tidur") atau lewat bot Telegram (`/nyalakan <nama>`).
+
+**Batas fisik, bukan batas kode:** paket ajaib Wake-on-LAN cuma siaran di jaringan
+LOKAL, tidak bisa lewat internet langsung ke komputer yang benar-benar mati. Jadi ini
+HANYA berhasil kalau ada **komputer It's Me LAIN yang masih menyala satu jaringan
+fisik** dengan komputer yang mau dibangunkan, dan node itu **pernah** melihatnya
+langsung lewat gosip LAN (diingat otomatis, bertahan walau komputernya sudah mati
+berhari-hari). Node yang diminta tapi tidak tahu MAC-nya sendiri otomatis menanyakan
+tetangga LAN-nya dulu (satu putaran, lihat `/wake` di bawah); kalau komputernya di
+lokasi/jaringan lain (lewat jembatan), dashboard menanyai tiap komputer jembatan yang
+online satu per satu. Komputer sendirian tanpa teman sejaringan yang menyala tidak
+bisa dibangunkan murni lewat web — perlu alat tambahan (mis. colokan pintar).
+
+Syarat di komputer TUJUAN (bukan di komputer yang mengirim sinyal): "Wake on LAN"
+aktif di BIOS/UEFI dan di pengaturan kartu jaringan (Device Manager > kartu jaringan >
+Power Management > "Allow this device to wake the computer"), dan komputer dalam
+keadaan tidur/mati normal (S3/S4/S5) — bukan benar-benar dicabut dari listrik.
+
 ## Perintah (di folder `%LOCALAPPDATA%\ItsMeNode\app`)
 
 ```
@@ -100,6 +122,7 @@ python -m inode status            semua node di jaringan (* = pemimpin)
 python -m inode ask "pertanyaan"  tanya hasil riset seluruh jaringan
 python -m inode recent            hasil riset terbaru
 python -m inode code              tampilkan kode gabung
+python -m inode wake "nama"       bangunkan komputer itu (Wake-on-LAN)
 ```
 
 Konfigurasi: `%LOCALAPPDATA%\ItsMeNode\data\config.json` (idle_minutes, always_work,
@@ -121,3 +144,9 @@ Akses jarak jauh (butuh kode gabung dari node lain; `?node=<id>` meneruskan ke k
 `GET /fs/list?path=…`, `GET /fs/read?path=…`, `GET /fs/download?path=…`,
 `POST /fs/write {"path","b64"}` (tulis/unggah berkas, maks 100 MB, base64 di `b64`;
 dipakai tombol unggah di dashboard tab 🖥️ Komputer).
+
+`POST /wake {"name"}` — bangunkan komputer bernama `name` (Wake-on-LAN, lihat
+"Menyalakan komputer yang mati" di atas). Kalau node ini sendiri tidak pernah melihat
+MAC-nya langsung, otomatis menanyakan tetangga LAN-nya satu putaran (`relay=false`
+pada panggilan ke tetangga, supaya tidak tanya-berantai tanpa akhir). Selalu balas
+200 dengan `{"ok": true/false, ...}` — cek `ok`, bukan kode HTTP.

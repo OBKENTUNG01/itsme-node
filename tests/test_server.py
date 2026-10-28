@@ -12,7 +12,7 @@ import urllib.request
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from inode import server  # noqa: E402
+from inode import server, wol  # noqa: E402
 
 IS_WIN = sys.platform == "win32"
 PORTS = {"A": 7401, "B": 7402}
@@ -61,6 +61,9 @@ class Cluster:
 
 
 class Store:
+    def __init__(self):
+        self._macs = {}
+
     def search(self, *a, **k):
         return []
 
@@ -69,6 +72,12 @@ class Store:
 
     def stats(self):
         return {}
+
+    def last_seen_mac(self, name):
+        return self._macs.get((name or "").strip().lower(), "")
+
+    def remember_seen(self, name, mac):
+        self._macs[(name or "").strip().lower()] = mac
 
 
 class Node:
@@ -87,8 +96,8 @@ def make(node_id):
 class ServerTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.srvA, _ = make("A")
-        cls.srvB, _ = make("B")
+        cls.srvA, cls.nodeA = make("A")
+        cls.srvB, cls.nodeB = make("B")
         cls.tmp = tempfile.mkdtemp()
         with open(os.path.join(cls.tmp, "note.txt"), "w", encoding="utf-8") as f:
             f.write("isi B")
@@ -173,6 +182,34 @@ class ServerTest(unittest.TestCase):
         if c == 200:
             self.assertIn("image/png", ct)
             self.assertEqual(b[:8], b"\x89PNG\r\n\x1a\n")
+
+    def test_wake_unknown_everywhere(self):
+        # Tidak dikenal di A maupun B: harus selesai cepat (tak pingpong tanpa akhir)
+        # dengan ok:false - bukan HTTP error (lihat server.py wake(), relay=False).
+        with mock.patch.object(wol, "send_magic_packet") as send:
+            c, res = self.post(PORTS["A"], "/wake", {"name": "TidakPernahAda"})
+        self.assertEqual(c, 200)
+        self.assertFalse(res["ok"])
+        send.assert_not_called()
+
+    def test_wake_known_locally(self):
+        self.nodeA.store.remember_seen("Printer-A", "112233445566")
+        with mock.patch.object(wol, "send_magic_packet", return_value=True) as send:
+            c, res = self.post(PORTS["A"], "/wake", {"name": "printer-a"})  # tak peka besar/kecil
+        self.assertEqual(c, 200)
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["mac"], "112233445566")
+        send.assert_called_once_with("112233445566")
+
+    def test_wake_relayed_through_peer(self):
+        # A sendiri tidak tahu MAC-nya, tapi B (tetangga LAN-nya) tahu -> A meneruskan.
+        self.nodeB.store.remember_seen("PCIbuJauh", "aabbccddeeff")
+        with mock.patch.object(wol, "send_magic_packet", return_value=True) as send:
+            c, res = self.post(PORTS["A"], "/wake", {"name": "PCIbuJauh"})
+        self.assertEqual(c, 200)
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["mac"], "aabbccddeeff")
+        send.assert_called_once_with("aabbccddeeff")  # terkirim oleh B
 
 
 if __name__ == "__main__":

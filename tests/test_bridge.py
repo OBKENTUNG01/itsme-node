@@ -13,7 +13,17 @@ from unittest import mock
 from urllib.parse import parse_qs, urlsplit
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from inode import bridge, remote  # noqa: E402
+from inode import bridge, remote, wol  # noqa: E402
+
+
+class FakeStore:
+    """Hanya apa yang dipakai wol.wake_by_name (lihat test_wol_* di bawah)."""
+
+    def __init__(self, macs=None):
+        self.macs = macs or {}
+
+    def last_seen_mac(self, name):
+        return self.macs.get((name or "").strip().lower(), "")
 
 
 class FakeDashboard:
@@ -105,7 +115,8 @@ class BridgeTest(unittest.TestCase):
             f.write("halo")
         self.cfg = {"bridge_url": self.dash.base, "bridge_token": "T", "name": "PC-Uji"}
         self.stop = threading.Event()
-        self.t = threading.Thread(target=bridge.run, args=(self.cfg, self.stop), daemon=True)
+        self.store = FakeStore({"pc-ibu": "aabbccddeeff"})
+        self.t = threading.Thread(target=bridge.run, args=(self.cfg, self.stop, self.store), daemon=True)
         self.t.start()
         self.addCleanup(lambda: (self.stop.set(), self.t.join(timeout=3)))
 
@@ -145,6 +156,24 @@ class BridgeTest(unittest.TestCase):
             self.dash.enqueue({"id": "c3", "type": "screen", "w": "800"})
             frame = self.dash.wait_frame("c3")
         self.assertEqual(frame, fake)
+
+    def test_wol_bridged_known_mac(self):
+        # Hub minta komputer jembatan ini membangunkan "PC-Ibu", yang MAC-nya pernah
+        # terlihat langsung di LAN node ini (lihat FakeStore di setUp).
+        self.assertTrue(self._registered())
+        with mock.patch.object(wol, "send_magic_packet", return_value=True) as send:
+            self.dash.enqueue({"id": "c4", "type": "wol", "target": "PC-Ibu"})
+            res = self.dash.wait_result("c4")
+        self.assertEqual(res, {"ok": True, "mac": "aabbccddeeff"})
+        send.assert_called_once_with("aabbccddeeff")
+
+    def test_wol_bridged_unknown_mac(self):
+        self.assertTrue(self._registered())
+        with mock.patch.object(wol, "send_magic_packet") as send:
+            self.dash.enqueue({"id": "c5", "type": "wol", "target": "TidakAda"})
+            res = self.dash.wait_result("c5")
+        self.assertFalse(res["ok"])
+        send.assert_not_called()
 
 
 if __name__ == "__main__":

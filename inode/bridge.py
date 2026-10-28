@@ -12,7 +12,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from . import remote
+from . import remote, wol
 from .cluster import log
 
 HDR = {"Content-Type": "application/json", "X-Itsme-Dashboard": "1"}
@@ -31,7 +31,7 @@ def _post_bytes(url, body, ctype, timeout):
         return r.status
 
 
-def run(cfg, stop):
+def run(cfg, stop, store):
     # base/token/name dibaca ULANG tiap putaran (bukan sekali di awal) supaya kalau
     # alamat Hub berubah (mis. pemimpin baru, domain tetap baru dipasang) dan sesuatu
     # memperbarui config.json, jembatan ikut pindah tanpa perlu It's Me Node dinyalakan
@@ -58,12 +58,12 @@ def run(cfg, stop):
         if not cmd or "type" not in cmd:
             continue
         try:
-            _handle(base, token, name, cmd)
+            _handle(base, token, name, cmd, store)
         except Exception as e:  # noqa: BLE001 - jangan sampai loop berhenti
             log("jembatan error:", e)
 
 
-def _handle(base, token, name, cmd):
+def _handle(base, token, name, cmd, store):
     cid, t = cmd.get("id"), cmd.get("type")
     if t == "screen":
         try:
@@ -86,6 +86,14 @@ def _handle(base, token, name, cmd):
         _result(base, token, name, cid, _safe(remote.fs_list, cmd.get("path", "")))
     elif t == "fs_read":
         _result(base, token, name, cid, _safe(remote.fs_read, cmd.get("path", "")))
+    elif t == "wol":
+        # Hub minta komputer jembatan INI mencoba membangunkan `target` lewat
+        # jaringan lokalnya sendiri - dipakai saat `target` di lokasi lain (bukan
+        # satu LAN dengan Hub), lihat website jarvis/itsme/node.py:wake().
+        sent, mac = wol.wake_by_name(store, cmd.get("target", ""))
+        value = {"ok": True, "mac": mac} if sent else \
+            {"ok": False, "error": f'komputer jembatan {name} tidak tahu MAC "{cmd.get("target", "")}"'}
+        _result(base, token, name, cid, value)
 
 
 def _safe(fn, arg):

@@ -12,7 +12,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
-from . import itsme, llm, remote, viewer
+from . import itsme, llm, remote, viewer, wol
 from .invites import Invites
 from .cluster import log
 
@@ -73,7 +73,10 @@ def make_server(node):
                                   "score": s.get("score"), "stats": s.get("stats"),
                                   "bot": bool(s.get("bot")),
                                   "leader": s["id"] == cluster.leader}
-                                 for s in alive.values()), key=lambda s: s["name"])}
+                                 for s in alive.values()), key=lambda s: s["name"]),
+                # Komputer yang pernah satu LAN langsung dengan node ini, hidup atau
+                # tidur - dashboard memakainya untuk tombol Nyalakan (Wake-on-LAN, /wake).
+                "known": store.seen_list()}
 
     def itsme_state(_):
         # Hanya pemimpin yang menjalankan bot yang membagikan memori/otak/akses It's Me.
@@ -110,6 +113,31 @@ def make_server(node):
             except Exception as e:
                 answer = f"(model lokal gagal menjawab: {e})"
         return {"answer": answer, "docs": best}
+
+    def wake(p):
+        """Bangunkan komputer bernama p['name'] lewat Wake-on-LAN (siaran lokal).
+        Kalau node ini sendiri tidak pernah melihat MAC-nya langsung, tanya tiap
+        tetangga LAN yang masih hidup (relay=False mencegah tanya-berantai tanpa
+        akhir - satu putaran ke tetangga cukup, karena semua node di LAN yang sama
+        saling bergosip langsung). Lihat wol.py untuk batas fisik Wake-on-LAN."""
+        name = (p.get("name") or "").strip()
+        if not name:
+            return {"ok": False, "error": "nama komputer kosong"}
+        sent, mac = wol.wake_by_name(store, name)
+        if sent:
+            return {"ok": True, "mac": mac, "via": cfg["name"]}
+        if not p.get("relay", True):
+            return {"ok": False, "error": f'node {cfg["name"]} tidak tahu MAC "{name}"'}
+        for s in cluster.alive().values():
+            if s["id"] == cluster.id:
+                continue
+            res = cluster.rpc(s["addr"], "/wake", {"name": name, "relay": False}, timeout=5)
+            if res and res.get("ok"):
+                return res
+        return {"ok": False,
+                "error": f'MAC "{name}" belum pernah terlihat langsung di jaringan lokal '
+                         "node ini atau tetangganya (komputer itu harus pernah satu LAN "
+                         "dengan SATU node It's Me yang masih hidup sekarang)"}
 
     def invite_new(p):
         # Hanya dari komputer ini (bot It's Me lewat 127.0.0.1), lihat _handle.
@@ -222,6 +250,7 @@ def make_server(node):
         "/itsme-state": itsme_state,
         "/enrolled": lambda p: {"devices": store.enrolled_list()},
         "/enrolled-merge": lambda p: {"ok": (store.merge_enrolled(p.get("devices")), True)[1]},
+        "/wake": wake,
     }
 
     class Handler(BaseHTTPRequestHandler):

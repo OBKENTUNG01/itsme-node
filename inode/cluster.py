@@ -99,6 +99,7 @@ class Cluster:
                 "working": self.working, "priority": self.cfg["leader_priority"],
                 "bot": self.bot, "leader": self.leader, "epoch": self.epoch,
                 "phase": self.phase, "fingerprint": self.cfg.get("_fingerprint"),
+                "mac": self.cfg.get("_mac"),
                 "lead_age": time.time() - self.lead_since if self.is_leader else None,
                 "version": VERSION, "started": self.started, "stats": self.store.stats()}
 
@@ -161,6 +162,11 @@ class Cluster:
                 # Ingat sidik jari perangkat keras peer, supaya ia bisa gabung lagi
                 # otomatis kalau nanti OS-nya diinstal ulang (lihat server /enroll).
                 self.store.enroll_device(s["fingerprint"], s.get("name"))
+            if s.get("mac") and s.get("name"):
+                # Peer ini langsung tergosip (jadi satu LAN dengan node ini) - ingat
+                # MAC-nya supaya bisa dibangunkan (Wake-on-LAN) kalau nanti ia mati
+                # dan sudah tak ada lagi di self.peers (lihat server.py /wake, wol.py).
+                self.store.remember_seen(s["name"], s["mac"])
             self._consider_claim(s)
         for a in payload.get("peers", []):
             if a != self.addr and not any(p["state"]["addr"] == a for p in self.peers.values()):

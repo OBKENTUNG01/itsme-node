@@ -29,6 +29,7 @@ class Store:
                 CREATE VIRTUAL TABLE IF NOT EXISTS docs_fts USING fts5(title, summary);
                 CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT);
                 CREATE TABLE IF NOT EXISTS enrolled(fp TEXT PRIMARY KEY, name TEXT, ts REAL);
+                CREATE TABLE IF NOT EXISTS seen(key TEXT PRIMARY KEY, name TEXT, mac TEXT, ts REAL);
             """)
 
     # --- perangkat terdaftar (supaya bisa gabung lagi walau diinstal ulang) ----
@@ -65,6 +66,32 @@ class Store:
                         "ts=MAX(enrolled.ts, excluded.ts)",
                         (fp, (r.get("name") or "")[:80], float(r.get("ts") or 0)))
             self.db.commit()
+
+    # --- Wake-on-LAN: MAC terakhir terlihat LANGSUNG lewat gosip LAN (lihat wol.py) --
+    def remember_seen(self, name, mac):
+        if not (name and mac):
+            return
+        key = name.strip().lower()
+        with self.lock:
+            self.db.execute(
+                "INSERT INTO seen(key,name,mac,ts) VALUES(?,?,?,?) ON CONFLICT(key) "
+                "DO UPDATE SET name=excluded.name, mac=excluded.mac, ts=excluded.ts",
+                (key, name.strip(), mac, time.time()))
+            self.db.commit()
+
+    def last_seen_mac(self, name):
+        with self.lock:
+            r = self.db.execute("SELECT mac FROM seen WHERE key=?",
+                                ((name or "").strip().lower(),)).fetchone()
+            return r[0] if r else ""
+
+    def seen_list(self, max_age=30 * 86400):
+        """Komputer yang pernah satu LAN langsung dengan node ini (untuk dashboard
+        menampilkan tombol Nyalakan pada yang sedang tidur)."""
+        with self.lock:
+            cutoff = time.time() - max_age
+            return [{"name": n, "ts": t} for n, t in
+                    self.db.execute("SELECT name, ts FROM seen WHERE ts > ?", (cutoff,))]
 
     # --- antrean URL -----------------------------------------------------------
     def add_links(self, rows):

@@ -63,6 +63,15 @@ def machine_fingerprint():
     return _FINGERPRINT
 
 
+def mac_address():
+    """Alamat MAC komputer ini (untuk Wake-on-LAN, lihat wol.py). Kosong kalau
+    uuid.getnode() cuma mengarang alamat acak (tak ada NIC asli yang terbaca)."""
+    n = uuid.getnode()
+    if (n >> 40) & 1:  # bit "acak" RFC 4122 milik uuid.getnode() saat gagal baca NIC asli
+        return ""
+    return "%012x" % n
+
+
 def ram_gb():
     if IS_WIN:
         class MEMSTAT(ctypes.Structure):
