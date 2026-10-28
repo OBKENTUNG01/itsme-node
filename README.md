@@ -75,9 +75,11 @@ http://localhost:7171/
 - **Layar** — pilih komputer di atas, lihat layarnya diperbarui berkala, dan centang
   **Kendalikan** untuk memakai mouse & keyboard-nya seperti remote desktop. Hanya layar
   utama; ini gambar berkala jadi ada sedikit jeda.
-- **Berkas** — telusuri folder komputer itu, lihat isi berkas teks, dan unduh. Berkas
-  rahasia (`.env`, kunci, token, login browser/aplikasi, `.ssh`, `.claude`) ditandai dan
-  **tidak bisa dibuka/diunduh**.
+- **Berkas** — telusuri folder komputer itu, lihat isi berkas teks, unduh, dan **unggah**
+  (kirim berkas dari komputer tempat dashboard dibuka ke komputer yang dipilih, sampai
+  100 MB). Berkas rahasia (`.env`, kunci, token, login browser/aplikasi, `.ssh`, `.claude`)
+  ditandai dan **tidak bisa dibuka/diunduh/ditimpa** — symlink & hardlink ke berkas
+  rahasia ikut ditolak (lihat `inode/remote.py`).
 - Dari HP: lewat bot It's Me kirim `/layar <nama>` untuk foto layar sebuah komputer, atau
   buka dashboard lewat domain/Cloudflare Tunnel sendiri (lihat `PANDUAN_AKSES_JARAK_JAUH.md`).
 
@@ -111,4 +113,6 @@ yang meneruskannya ke sini dari 127.0.0.1 — jadi komputer baru tidak perlu Tai
 
 Akses jarak jauh (butuh kode gabung dari node lain; `?node=<id>` meneruskan ke komputer itu):
 `GET /screen?w=1280` (PNG layar), `POST /input {events:[…]}` (mouse/keyboard),
-`GET /fs/list?path=…`, `GET /fs/read?path=…`, `GET /fs/download?path=…`.
+`GET /fs/list?path=…`, `GET /fs/read?path=…`, `GET /fs/download?path=…`,
+`POST /fs/write {"path","b64"}` (tulis/unggah berkas, maks 100 MB, base64 di `b64`;
+dipakai tombol unggah di dashboard tab 🖥️ Komputer).
