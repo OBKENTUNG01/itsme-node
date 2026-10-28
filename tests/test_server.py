@@ -9,6 +9,7 @@ import tempfile
 import unittest
 import urllib.error
 import urllib.request
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from inode import server  # noqa: E402
@@ -122,6 +123,16 @@ class ServerTest(unittest.TestCase):
         c, ct, b = self.get(PORTS["A"], "/fs/list?path=" + urllib.request.quote(self.tmp))
         d = json.loads(b)
         self.assertIn("note.txt", [e["name"] for e in d["entries"]])
+
+    def test_self_served_request_touches_remote_access(self):
+        # "Dipakai" kini = sedang diakses lewat web (lihat __main__.py); server.py
+        # harus menandainya tiap kali melayani permintaan jarak jauh untuk DIRINYA
+        # SENDIRI, supaya riset latar dijeda selama itu - lihat inode/remote.py.
+        from inode import remote
+
+        with mock.patch.object(remote, "touch_remote_access") as touch:
+            self.get(PORTS["A"], "/fs/list?path=" + urllib.request.quote(self.tmp))
+        touch.assert_called_once()
 
     def test_fs_list_proxy_to_B(self):
         # A diminta berkas milik B -> diteruskan ke B.

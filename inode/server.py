@@ -177,7 +177,9 @@ def make_server(node):
             headers = {"Content-Disposition": disp} if disp else {}
             return ("raw", code, ctype or "application/octet-stream", body, headers)
 
-        # komputer ini sendiri
+        # komputer ini sendiri - tandai "sedang diakses dari web" supaya riset
+        # latar dijeda SELAMA dashboard memakai komputer ini (lihat remote.py).
+        remote.touch_remote_access()
         if path == "/screen":
             try:
                 w = int(p.get("w", 1280) or 1280)

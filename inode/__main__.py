@@ -16,7 +16,7 @@ import threading
 import time
 import urllib.request
 
-from . import VERSION, bridge, itsme, llm, system, updater
+from . import VERSION, bridge, itsme, llm, remote, system, updater
 from .cluster import Cluster, log
 from .config import Config
 from .crawler import Crawler
@@ -177,7 +177,11 @@ def run(args):
             # Alamat publik (tunnel) mengikuti pemimpin, supaya failover lintas-jaringan
             # tetap terjangkau di alamat yang sama. Mati bawaan (tunnel_cmd kosong).
             tunnel_proc = reconcile_tunnel(cfg, node.cluster.is_leader, tunnel_proc)
-            idle = system.idle_seconds() >= cfg["idle_minutes"] * 60
+            # "Dipakai" = sedang diakses lewat web (layar/kendali/berkas dari
+            # dashboard), BUKAN ketikan/klik lokal - pemilik tetap bisa
+            # memakai komputernya seperti biasa tanpa menghentikan riset latar;
+            # hanya akses jarak jauh yang menjeda (lihat remote.touch_remote_access).
+            idle = remote.remote_idle_seconds() >= cfg["idle_minutes"] * 60
             working = cfg["always_work"] or idle
             if working != node.cluster.working:
                 node.cluster.working = working

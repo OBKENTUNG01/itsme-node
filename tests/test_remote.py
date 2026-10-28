@@ -158,5 +158,25 @@ class InputTest(unittest.TestCase):
             self.assertEqual(remote.inject([]), 0)
 
 
+class RemoteAccessIdleTest(unittest.TestCase):
+    """'Dipakai' kini berarti sedang diakses lewat web, bukan ketikan lokal -
+    lihat __main__.py (idle = remote.remote_idle_seconds() >= idle_minutes*60)."""
+
+    def setUp(self):
+        remote._last_remote_access = 0.0  # belum pernah diakses sejak modul dimuat
+
+    def test_never_accessed_is_effectively_never_idle_free(self):
+        self.assertGreater(remote.remote_idle_seconds(), 10**8)
+
+    def test_touch_resets_to_near_zero(self):
+        remote.touch_remote_access()
+        self.assertLess(remote.remote_idle_seconds(), 1.0)
+
+    def test_idle_grows_without_further_touches(self):
+        remote.touch_remote_access()
+        with mock.patch.object(remote.time, "time", return_value=remote._last_remote_access + 400):
+            self.assertGreaterEqual(remote.remote_idle_seconds(), 400)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -13,10 +13,33 @@ import re
 import struct
 import sys
 import threading
+import time
 import zlib
 
 IS_WIN = sys.platform == "win32"
 _cap_lock = threading.Lock()
+
+# "Dipakai" kini berarti SEDANG DIAKSES LEWAT WEB (layar/kendali/berkas dari
+# dashboard), BUKAN ada ketikan/klik lokal - pemilik yang mengetik di komputer
+# sendiri tidak boleh menghentikan riset latar; hanya akses jarak jauh yang
+# menghentikannya. touch_remote_access() dipanggil server.py tiap permintaan
+# jarak jauh yang dilayani KOMPUTER INI SENDIRI (bukan diteruskan ke node lain).
+_last_remote_access = 0.0
+_remote_lock = threading.Lock()
+
+
+def touch_remote_access():
+    global _last_remote_access
+    with _remote_lock:
+        _last_remote_access = time.time()
+
+
+def remote_idle_seconds():
+    """Detik sejak akses jarak jauh TERAKHIR (layar/kendali/berkas). Besar
+    sekali kalau belum pernah diakses sejak komputer ini menyala."""
+    with _remote_lock:
+        last = _last_remote_access
+    return (time.time() - last) if last else 10**9
 
 # Berkas yang tidak boleh dibaca/diunduh isinya (tetap muncul di daftar, ditandai).
 _SECRET = re.compile(
