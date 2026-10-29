@@ -55,6 +55,9 @@ bot otomatis lewat Hub, tanpa kode undangan baru kalau komputer itu **pernah** t
 - **Bot It's Me ikut pemimpin.** It's Me dipasang di beberapa komputer, tapi hanya
   komputer pemimpin yang mengambil pesan Telegram; komputer lain siaga. Memori,
   otak yang dipilih, dan mode akses disalin dari pemimpin ke komputer lain tiap 20 detik.
+  Isi lama yang ditimpa **dicadangkan dulu** di `<folder It's Me>\data\sync-backup\` (20
+  salinan terakhir per berkas; memori yang kosong tidak perlu dicadangkan), jadi catatan
+  di komputer yang baru bergabung tidak hilang tanpa jejak.
 - Kalau pemimpin mati, semua node berhenti sejenak, memilih pemimpin baru (yang punya
   It's Me, lalu prioritas, menganggur, skor tertinggi), lalu melanjutkan tugasnya.
   Prosesnya sekitar 20 detik, dan bot Telegram aktif di pemimpin baru.

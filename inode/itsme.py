@@ -13,9 +13,13 @@ Tailscale supaya bot It's Me ikut pulih. Lihat env_bundle().
 """
 
 import os
+import time
 
 SYNC_FILES = ("memory.md", "brain.json", "access.json")
 MAX_FILE = 256 * 1024
+# Salinan LAMA tiap berkas yang ditimpa pemimpin disimpan di <data>/sync-backup (sebanyak ini).
+BACKUP_KEEP = 20
+_MEMORY_HEADER = "# Memori It's Me"
 _OFF = ("0", "false", "no", "off")
 # Kunci .env yang khusus per-komputer (folder, alamat, perangkat keras): tidak
 # ikut dikirim ke komputer lain. Sama dengan daftar di bot (node.py _LOCAL_ONLY).
@@ -95,8 +99,37 @@ def read_state(cfg):
     return out
 
 
+def _backup_before_overwrite(data, name, old):
+    """Simpan isi LAMA `name` di <data>/sync-backup sebelum ditimpa salinan pemimpin.
+
+    29 Okt 2026: begitu komputer-komputer yang tadinya memimpin sendiri-sendiri bergabung,
+    memori satu komputer langsung ditimpa memori pemimpin tanpa jejak - kalau yang tertimpa
+    berisi catatan, hilang selamanya. Isi kosong (atau hanya judul memori) tak perlu
+    dicadangkan. Gagal mencadangkan tidak boleh menghentikan sinkronisasi."""
+    if old.strip() in ("", _MEMORY_HEADER):
+        return
+    try:
+        folder = os.path.join(data, "sync-backup")
+        os.makedirs(folder, exist_ok=True)
+        stem, ext = os.path.splitext(name)
+        now = time.time()
+        stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now)) + f"-{int(now * 1000) % 1000:03d}"
+        for seq in range(100):  # dua penimpaan dalam milidetik yang sama tidak saling menimpa cadangan
+            target = os.path.join(folder, f"{stem}-{stamp}-{seq:02d}{ext}")
+            if not os.path.exists(target):
+                break
+        with open(target, "w", encoding="utf-8", newline="") as f:
+            f.write(old)
+        mine = sorted(p for p in os.listdir(folder) if p.startswith(stem + "-") and p.endswith(ext))
+        for p in mine[:-BACKUP_KEEP]:
+            os.remove(os.path.join(folder, p))
+    except OSError:
+        pass
+
+
 def write_state(cfg, files):
-    """Tulis salinan dari pemimpin. Kembalikan nama berkas yang berubah."""
+    """Tulis salinan dari pemimpin. Kembalikan nama berkas yang berubah. Isi lama yang
+    ditimpa dicadangkan dulu (lihat _backup_before_overwrite)."""
     data = os.path.join(home(cfg), "data")
     changed = []
     for name, text in (files or {}).items():
@@ -105,10 +138,13 @@ def write_state(cfg, files):
         path = os.path.join(data, name)
         try:
             with open(path, encoding="utf-8", newline="") as f:
-                if f.read() == text:
-                    continue
+                old = f.read()
         except (OSError, UnicodeDecodeError):
-            pass
+            old = None
+        if old == text:
+            continue
+        if old:
+            _backup_before_overwrite(data, name, old)
         os.makedirs(data, exist_ok=True)
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8", newline="") as f:
