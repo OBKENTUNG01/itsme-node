@@ -77,6 +77,7 @@ class Cfg(dict):
 
 class Cluster:
     id = "me"
+    addr = "127.0.0.1:0"
     leader = "me"
     phase = "running"
     epoch = 1
@@ -163,11 +164,22 @@ class EnrollEndpointTest(unittest.TestCase):
         self.assertEqual(res["join_code"], "RAHASIA-GABUNG")  # kode gabung dikembalikan
         self.assertEqual(res["env"]["TELEGRAM_BOT_TOKEN"], "123:abc")  # bot ikut pulih
         self.assertNotIn("ITSME_DATA_DIR", res["env"])        # kunci per-komputer dibuang
+        self.assertEqual(res["seed"], "127.0.0.1:0")           # titik awal gosip ikut dikirim
 
     def test_empty_fingerprint(self):
         with self.assertRaises(urllib.error.HTTPError) as cm:
             self.post("/enroll", {"fingerprint": "", "name": "X"})
         self.assertEqual(cm.exception.code, 400)
+
+    def test_invite_endpoint_also_returns_seed(self):
+        # Tanpa "seed", komputer baru yang menukar kode undangan tidak pernah
+        # tahu alamat node ini untuk mulai gosip (lihat install.ps1 langkah 5).
+        code, _ = self.post("/invite-new", {"code": "UNDANGAN12345", "ttl": 60, "env": {}})
+        self.assertEqual(code, 200)
+        code, res = self.post("/invite", {"code": "UNDANGAN12345", "name": "Baru"})
+        self.assertEqual(code, 200)
+        self.assertEqual(res["join_code"], "RAHASIA-GABUNG")
+        self.assertEqual(res["seed"], "127.0.0.1:0")
 
     def test_enrolled_sync_endpoint(self):
         self.store.enroll_device("fp1", "A")

@@ -153,7 +153,10 @@ def make_server(node):
         if env is None:
             return 404, {"error": "kode undangan salah, sudah dipakai, atau kedaluwarsa"}
         log("info", "undangan dipakai oleh", str(p.get("name", "?"))[:60])
-        return 200, {"join_code": cfg["join_code"], "env": env, "from": cfg["name"]}
+        # "seed": alamat node ini sendiri, supaya komputer baru punya titik awal
+        # untuk gosip (tanpa ini, dua node dengan join_code sama TETAP tidak
+        # pernah saling tahu alamat - tak ada cara lain menemukan satu sama lain).
+        return 200, {"join_code": cfg["join_code"], "env": env, "from": cfg["name"], "seed": cluster.addr}
 
     def enroll(p, ip):
         """Komputer yang DULU pernah terdaftar lalu diinstal ulang gabung lagi tanpa
@@ -173,7 +176,7 @@ def make_server(node):
         store.enroll_device(fp, p.get("name"))
         env = itsme.env_bundle(cfg) if itsme.ready(cfg) else {}
         log("info", "gabung-ulang otomatis oleh", str(p.get("name", "?"))[:60], fp[:8])
-        return 200, {"join_code": cfg["join_code"], "env": env, "from": cfg["name"]}
+        return 200, {"join_code": cfg["join_code"], "env": env, "from": cfg["name"], "seed": cluster.addr}
 
     # --- akses jarak jauh: layar, input, berkas (lokal atau diteruskan ke node lain) ---
     def _addr_of(node_id):

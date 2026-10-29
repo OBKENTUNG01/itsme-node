@@ -151,6 +151,16 @@ function Install-ItsMeNode {
     if ($joined.bridge_token) {
         $cfg | Add-Member -NotePropertyName bridge_token -NotePropertyValue "$($joined.bridge_token)" -Force
     }
+    if ($joined.seed) {
+        # Titik awal gosip: tanpa ini, dua komputer dengan join_code yang sama
+        # tetap TIDAK PERNAH saling tahu alamat satu sama lain di LAN. Simpan
+        # alamat Hub ke "seeds" supaya node ini bisa mulai gosip darinya; sisanya
+        # (komputer lain yang sudah dikenal Hub) menyebar sendiri lewat gosip.
+        $existing = @($cfg.seeds) | Where-Object { $_ }
+        if ($existing -notcontains $joined.seed) {
+            $cfg | Add-Member -NotePropertyName seeds -NotePropertyValue (@($existing) + $joined.seed) -Force
+        }
+    }
     [IO.File]::WriteAllText($cfgPath, ($cfg | ConvertTo-Json -Depth 5))
 
     # 6. Buka port 7171 hanya untuk jaringan lokal (LAN); jembatan ke Hub menyambung keluar.
