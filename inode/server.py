@@ -6,13 +6,11 @@ import hmac
 import ipaddress
 import json
 import threading
-import urllib.error
 import urllib.parse
-import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
-from . import itsme, llm, remote, viewer, wol
+from . import auth, itsme, llm, remote, viewer, wol
 from .invites import Invites
 from .cluster import log
 
@@ -35,6 +33,24 @@ def client_ip(peer, headers):
         if fwd:
             return fwd
     return peer
+
+
+def check_auth(cfg, verifier, peer, method, target, raw, headers):
+    """Apakah permintaan dari `peer` boleh? Komputer ini sendiri selalu boleh.
+    Node lain harus menandatangani permintaannya (auth.py - kunci tak pernah
+    melintas di kabel); token Bearer lama hanya diterima selama node lain belum
+    diperbarui (config accept_legacy_bearer)."""
+    if peer in LOCAL:
+        return True
+    if verifier.check(cfg, method, target, raw, headers):
+        return True
+    if cfg.get("accept_legacy_bearer", True):
+        got = headers.get("Authorization", "").removeprefix("Bearer ")
+        try:
+            return hmac.compare_digest(got, cfg.token)
+        except TypeError:  # header non-ASCII
+            return False
+    return False
 
 
 def _in_lan(ip):
@@ -63,6 +79,7 @@ def _in_tailnet(ip):
 def make_server(node):
     cfg, cluster, store = node.cfg, node.cluster, node.store
     invites = Invites()
+    verifier = auth.Verifier()
 
     def status(_):
         alive = cluster.alive()
@@ -183,15 +200,10 @@ def make_server(node):
         return (cluster.alive().get(node_id) or {}).get("addr")
 
     def _node_get(addr, path, params):
-        """GET ke node lain dengan token; kembalikan (kode, content-type, bytes, disposition)."""
-        url = f"http://{addr}{path}?" + urllib.parse.urlencode(params)
-        req = urllib.request.Request(url, headers={"Authorization": "Bearer " + cfg.token})
-        try:
-            with urllib.request.urlopen(req, timeout=25) as r:
-                return r.status, r.headers.get("Content-Type", ""), r.read(), \
-                    r.headers.get("Content-Disposition", "")
-        except urllib.error.HTTPError as e:
-            return e.code, e.headers.get("Content-Type", "application/json"), e.read(), ""
+        """GET ke node lain (ditandatangani, lihat auth.py); kembalikan
+        (kode, content-type, bytes, disposition)."""
+        return auth.http_request(cfg, addr, "GET", f"{path}?" + urllib.parse.urlencode(params),
+                                 None, timeout=25)
 
     def remote_route(path, p):
         """Kembalikan ('json', code, obj) atau ('raw', code, ctype, bytes, headers)."""
@@ -264,10 +276,8 @@ def make_server(node):
             return client_ip(self.client_address[0], self.headers)
 
         def _authorized(self):
-            if self.client_address[0] in LOCAL:
-                return True
-            got = self.headers.get("Authorization", "").removeprefix("Bearer ")
-            return hmac.compare_digest(got, cfg.token)
+            return check_auth(cfg, verifier, self.client_address[0], self.command, self.path,
+                              getattr(self, "_raw", b""), self.headers)
 
         def _reply(self, code, obj):
             body = json.dumps(obj, ensure_ascii=False).encode()
@@ -337,13 +347,15 @@ def make_server(node):
             self._reply(200, res)
 
         def do_GET(self):
+            self._raw = b""
             qs = parse_qs(urlsplit(self.path).query)
             self._handle({k: v[0] for k, v in qs.items()})
 
         def do_POST(self):
             n = int(self.headers.get("Content-Length") or 0)
+            self._raw = self.rfile.read(n) if n else b""  # isi mentah: ikut ditandatangani
             try:
-                payload = json.loads(self.rfile.read(n) or b"{}")
+                payload = json.loads(self._raw or b"{}")
             except ValueError:
                 return self._reply(400, {"error": "json rusak"})
             self._handle(payload)

@@ -28,7 +28,8 @@ class _Cfg(dict):
 def _cfg(**over):
     base = _Cfg(node_id="A", name="Komputer-A", advertise="127.0.0.1:1", seeds=[],
                 leader_priority=0, port=1, join_code="x", _fingerprint="fpA",
-                _mac="aaaaaaaaaaaa", tailscale_discovery=False)
+                _mac="aaaaaaaaaaaa", tailscale_discovery=False,
+                lan_discovery=False)  # uji tidak boleh menyapu LAN asli pemilik
     base.update(over)
     return base
 
@@ -80,8 +81,9 @@ class GossipDiscoveryTest(unittest.TestCase):
         node.cfg, node.cluster, node.store = cfg, cluster, store
         node.profile = {"model": "", "score": 1}
         srv = make_server(node)
-        self.addCleanup(srv.shutdown)
+        # addCleanup berjalan terbalik: shutdown() harus lebih dulu, baru server_close().
         self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
         return cluster
 
     def test_without_seed_nobody_finds_anybody(self):

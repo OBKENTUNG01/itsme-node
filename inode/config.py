@@ -20,6 +20,13 @@ DEFAULTS = {
     "tailscale_discovery": False,
     # Kode gabung bersama; tanpa ini node tidak saling percaya.
     "join_code": "",
+    # Terima juga token Bearer lama (node versi lama belum bisa menandatangani
+    # permintaan). Matikan (False) setelah SEMUA komputer diperbarui, supaya token
+    # yang pernah bocor di jaringan tak berguna lagi.
+    "accept_legacy_bearer": True,
+    # Cari node It's Me lain di LAN (sapu port gosip di /24 sendiri) - ini yang
+    # mempertemukan komputer yang sudah gabung tapi belum saling tahu alamat.
+    "lan_discovery": True,
     # Komputer dianggap menganggur setelah tidak ada input sekian menit.
     "idle_minutes": 5,
     # True = tetap bekerja walau komputer sedang dipakai.

@@ -6,9 +6,12 @@ hidup walau komputer utamanya mati, dan membiarkanmu **melihat & mengendalikan
 layar** serta **menelusuri berkas** semua komputer yang terhubung (seperti
 remote desktop, **tanpa Tailscale/VPN** dan tanpa aplikasi tambahan).
 
-Komputer sejaringan saling menemukan lewat IP LAN; komputer di jaringan/lokasi
-berbeda menyambung **keluar** ke dashboard It's Me (lewat domain/Cloudflare Tunnel
-sendiri), jadi tetap jalan di balik NAT tanpa VPN.
+Komputer sejaringan saling menemukan lewat IP LAN (node juga **menyapu jaringan
+LAN-nya sendiri** mencari node It's Me lain, jadi komputer yang sudah bergabung tapi
+belum pernah diberi alamat satu sama lain tetap ketemu — lihat "Saling menemukan &
+keamanan" di bawah); komputer di jaringan/lokasi berbeda menyambung **keluar** ke
+dashboard It's Me (lewat domain/Cloudflare Tunnel sendiri), jadi tetap jalan di balik NAT
+tanpa VPN.
 
 ## Pasang (PowerShell)
 
@@ -57,6 +60,9 @@ bot otomatis lewat Hub, tanpa kode undangan baru kalau komputer itu **pernah** t
   Prosesnya sekitar 20 detik, dan bot Telegram aktif di pemimpin baru.
 - Komputer yang baru menyala tidak merebut posisi pemimpin yang sedang berjalan.
   Pemimpin yang menyala ulang sebentar (mis. memasang pembaruan) langsung memimpin lagi.
+  Satu pengecualian disengaja: komputer **berprioritas lebih tinggi** (Hub) yang menyala
+  lagi atau baru ketemu merebut kembali posisi dari komputer berprioritas lebih rendah
+  (lihat "Prioritas pemimpin" di bawah).
 - Saat komputer menganggur (default 5 menit tanpa input), node menjelajah internet,
   merangkum halaman dengan model lokal, dan menyimpannya. Begitu komputer dipakai lagi,
   riset dijeda dan model dilepas dari memori.
@@ -65,6 +71,42 @@ bot otomatis lewat Hub, tanpa kode undangan baru kalau komputer itu **pernah** t
 - Komputer lambat tanpa model tetap ikut menjelajah dan meminta rangkuman dari node yang punya model.
 - Setiap hasil riset disalin ke satu node lain sebagai cadangan.
 - Pembaruan otomatis dari repo ini setiap 30 menit.
+
+## Saling menemukan & keamanan antar-komputer
+
+**Penemuan LAN.** Setiap node menyapu `/24` miliknya sendiri (hanya jaringan pribadi,
+hanya port gosip 7171, tanpa mengirim rahasia): alamat yang menjawab `401 "kode gabung
+salah"` ke permintaan tanpa kredensial dikenali sebagai node It's Me dan dijadikan
+kandidat gosip. Sapuan berjalan tiap 60 detik selama node masih sendirian, lalu tiap 10
+menit untuk mencari yang belum ketemu. Inilah yang mempertemukan komputer-komputer yang
+sama-sama sudah punya kode gabung yang sama tapi dulu tidak pernah diberi tahu alamat
+satu sama lain (setiap komputer akhirnya memimpin sendirian dan semuanya menjalankan bot
+Telegram dengan token yang sama — saling bentrok `Conflict`). Alamat yang gagal terus
+ditunda dulu (jeda makin panjang) supaya satu alamat mati tak memperlambat gosip; alamat
+yang menolak kode gabung kita dilewati 10 menit. Matikan dengan `lan_discovery: false`.
+
+**Permintaan ditandatangani.** Setiap permintaan antar-komputer memuat tanda tangan
+HMAC-SHA256 (`X-Itsme-Ts`, `X-Itsme-Nonce`, `X-Itsme-Sig`) atas metode, alamat, isi, waktu,
+dan nonce, dengan kunci yang diturunkan dari kode gabung. Selisih jam lebih dari 60 detik
+ditolak dan setiap nonce hanya berlaku sekali, jadi permintaan yang tertangkap di LAN
+tidak bisa diputar ulang — beda dari token Bearer statis lama, yang dikirim polos lewat
+HTTP dan berlaku selamanya begitu terlihat. Node versi lama belum bisa menandatangani, jadi
+selama masa peralihan server **juga menerima Bearer lama** (`accept_legacy_bearer: true`,
+bawaan) dan klien jatuh ke Bearer otomatis untuk node lama yang menolak tanda tangan.
+**Setelah SEMUA komputer ter-update, setel `accept_legacy_bearer` ke `false`** supaya token
+lama yang pernah terlihat di jaringan tak berguna lagi.
+
+**Prioritas pemimpin.** Urutan menang saat dua klaim pemimpin bertemu: punya bot It's Me →
+**prioritas** → lama memimpin → skor → id. Prioritas didahulukan sebelum lama memimpin supaya
+ketika kelompok komputer yang tadinya terpisah bertemu, Hub yang menang — bukan PC lain yang
+kebetulan sudah lebih lama memimpin sendirian. `leader_priority` yang diisi (≠ 0) dipakai
+apa adanya; kalau 0, komputer **tanpa** `bridge_url` (Hub, komputer pertama) otomatis
+berprioritas 10 dan komputer yang bergabung lewat `/pasang` (punya `bridge_url`) 0. Pemasang
+(`install.ps1`) untuk komputer **pertama** mengisi `leader_priority` = 100 supaya Hub jelas
+menang walau ada PC yang konfigurasinya tak lengkap. Pemimpin yang berprioritas lebih rendah
+digantikan Hub dalam hitungan detik begitu keduanya saling melihat. Komputer yang masih
+menjalankan versi lama (< 0.7.0) tidak mengenal prioritas; mereka tetap rukun dengan Hub
+begitu ter-update otomatis (≤ 30 menit).
 
 ## Lihat & kendalikan komputer, telusuri berkas
 
@@ -127,7 +169,7 @@ python -m inode wake "nama"       bangunkan komputer itu (Wake-on-LAN)
 
 Konfigurasi: `%LOCALAPPDATA%\ItsMeNode\data\config.json` (idle_minutes, always_work,
 model, leader_priority, leader_start, leader_stop, bridge_url, bridge_token,
-tunnel_cmd, dll). `tunnel_cmd` (mis. `cloudflared tunnel run itsme`) dijalankan hanya
+accept_legacy_bearer, lan_discovery, tunnel_cmd, dll). `tunnel_cmd` (mis. `cloudflared tunnel run itsme`) dijalankan hanya
 selama node ini pemimpin, supaya alamat publik mengikuti pemimpin saat failover
 (lihat `PANDUAN_AKSES_JARAK_JAUH.md`).
 

@@ -144,6 +144,9 @@ function Install-ItsMeNode {
         if (-not $code) {
             $code = & $py -c "import secrets;print(secrets.token_urlsafe(18))"
             $first = $true
+            # Komputer PERTAMA = Hub: beri prioritas pemimpin yang jelas supaya dialah yang
+            # memimpin kapan pun komputer lain bergabung belakangan, apa pun kondisi mereka.
+            $cfg | Add-Member -NotePropertyName leader_priority -NotePropertyValue 100 -Force
         }
         $cfg | Add-Member -NotePropertyName join_code -NotePropertyValue $code.Trim() -Force
     }

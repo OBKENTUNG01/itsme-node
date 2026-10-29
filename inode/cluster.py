@@ -19,14 +19,17 @@
 
 import concurrent.futures
 import hashlib
+import ipaddress
 import json
 import math
+import socket
 import subprocess
 import threading
 import time
+import urllib.error
 import urllib.request
 
-from . import VERSION, system
+from . import PROTO, VERSION, auth, system
 
 GOSSIP_EVERY = 2.0
 DEAD_AFTER = 10.0
@@ -40,6 +43,16 @@ CLAIM_TIMEOUT = 25.0
 RESUME_WINDOW = 8.0
 # Selisih lama memimpin yang dianggap sama (jeda gosip tidak persis).
 AGE_TOLERANCE = 5.0
+# Komputer pertama (Hub: tanpa jembatan keluar ke dashboard lain) otomatis lebih
+# diutamakan daripada komputer yang bergabung lewat /pasang, kecuali leader_priority
+# diisi sendiri. Dipakai SEBELUM lama memimpin, supaya saat beberapa kelompok node
+# yang terpisah bertemu, Hub-lah yang menang - bukan PC lain yang kebetulan lebih lama menyala.
+HUB_PRIORITY = 10
+# Penemuan node It's Me di LAN: sapu /24 milik komputer ini (hanya port gosip).
+SWEEP_ALONE = 60.0     # detik antar sapuan saat belum melihat node lain
+SWEEP_BUSY = 600.0     # detik antar sapuan saat sudah ada teman (mencari yang belum ketemu)
+# Alamat yang menolak kode gabung kita (mesh lain / bukan node kita) tak dihubungi lagi sekian detik.
+REJECT_SKIP = 600.0
 
 
 def log(*a):
@@ -70,25 +83,41 @@ class Cluster:
         self.pool = concurrent.futures.ThreadPoolExecutor(16)
         self._owner_cache = ({}, None)
         self._last_discovery = 0
+        self._rejected = {}  # alamat -> kapan menolak kode gabung kita
+        self._fail = {}      # alamat kandidat -> (gagal beruntun, coba lagi setelah kapan)
+        self._last_sweep = 0.0
+        self._sweeping = False
         self._resume()
 
     def _my_addr(self):
         if self.cfg["advertise"]:
             return self.cfg["advertise"]
-        # Tanpa Tailscale, pakai IP LAN supaya node sejaringan tetap saling temu;
-        # node di jaringan lain memakai jembatan ke dashboard (bridge.py).
-        ip = system.tailscale_ip() or system.lan_ip() or "127.0.0.1"
+        # IP LAN dulu: komputer yang bergabung lewat /pasang TIDAK punya Tailscale
+        # (pemasang mencopotnya), jadi alamat 100.x tak terjangkau bagi mereka dan
+        # node tak akan pernah saling kenal. Tailscale hanya cadangan.
+        ip = system.lan_ip() or system.tailscale_ip() or "127.0.0.1"
         return f"{ip}:{self.cfg['port']}"
+
+    @property
+    def priority(self):
+        """Prioritas pemimpin: leader_priority kalau diisi, kalau tidak Hub (komputer
+        tanpa jembatan keluar) otomatis HUB_PRIORITY dan komputer lain 0."""
+        explicit = int(self.cfg.get("leader_priority") or 0)
+        if explicit:
+            return explicit
+        return 0 if self.cfg.get("bridge_url") else HUB_PRIORITY
 
     # --- RPC -------------------------------------------------------------------
     def rpc(self, addr, path, payload=None, timeout=5):
-        req = urllib.request.Request(
-            f"http://{addr}{path}", data=json.dumps(payload or {}).encode(),
-            headers={"Content-Type": "application/json",
-                     "Authorization": "Bearer " + self.cfg.token})
+        """POST JSON ke node lain: ditandatangani (auth.py); node lama dilayani dengan Bearer."""
+        body = json.dumps(payload or {}).encode()
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as r:
-                return json.loads(r.read())
+            code, _, data, _ = auth.http_request(
+                self.cfg, addr, "POST", path, body, timeout,
+                headers={"Content-Type": "application/json"})
+            if code in (401, 403):
+                self._rejected[addr] = time.time()
+            return json.loads(data) if code == 200 else None
         except (OSError, ValueError):
             return None
 
@@ -96,7 +125,7 @@ class Cluster:
     def state(self):
         return {"id": self.id, "name": self.cfg["name"], "addr": self.addr,
                 "score": self.profile["score"], "model": self.profile["model"],
-                "working": self.working, "priority": self.cfg["leader_priority"],
+                "working": self.working, "priority": self.priority, "proto": PROTO,
                 "bot": self.bot, "leader": self.leader, "epoch": self.epoch,
                 "phase": self.phase, "fingerprint": self.cfg.get("_fingerprint"),
                 "mac": self.cfg.get("_mac"),
@@ -133,13 +162,23 @@ class Cluster:
         return age + (time.time() - p["seen"] if p else 0.0)
 
     def stronger(self, a, b):
-        """True kalau klaim pemimpin a mengalahkan klaim b."""
+        """True kalau klaim pemimpin a mengalahkan klaim b.
+
+        Urutan: punya bot, PRIORITAS, lama memimpin, skor, id. Prioritas sebelum
+        lama memimpin: saat dua kelompok node yang tadinya terpisah bertemu, Hub
+        (atau komputer yang diberi leader_priority) yang menang - bukan PC yang
+        kebetulan sudah lebih lama memimpin sendirian. Antar node yang sama
+        prioritasnya, yang lebih lama memimpin tetap menang (komputer yang baru
+        menyala tidak merebut posisi)."""
         if bool(a.get("bot")) != bool(b.get("bot")):
             return bool(a.get("bot"))
+        pa, pb = a.get("priority", 0), b.get("priority", 0)
+        if pa != pb:
+            return pa > pb
         age_a, age_b = self._lead_age(a), self._lead_age(b)
         if abs(age_a - age_b) > AGE_TOLERANCE:
             return age_a > age_b
-        key = lambda s: (s.get("priority", 0), s.get("score", 0), s["id"])  # noqa: E731
+        key = lambda s: (s.get("score", 0), s["id"])  # noqa: E731
         return key(a) > key(b)
 
     @property
@@ -157,6 +196,7 @@ class Cluster:
             with self.lock:
                 self.peers[s["id"]] = {"state": s, "seen": time.time()}
                 self.addrs.discard(s["addr"])
+                self._fail.pop(s["addr"], None)
                 self._ever_heard = True
             if s.get("fingerprint"):
                 # Ingat sidik jari perangkat keras peer, supaya ia bisa gabung lagi
@@ -181,19 +221,112 @@ class Cluster:
             self._last_discovery = now
             for ip in system.tailscale_peers():
                 self.addrs.add(f"{ip}:{self.cfg['port']}")
+        self._maybe_sweep(now)
         with self.lock:
             # Hapus node yang sudah lama mati.
             for i in [i for i, p in self.peers.items() if now - p["seen"] > FORGET_AFTER]:
                 del self.peers[i]
-            targets = {p["state"]["addr"] for p in self.peers.values()} | set(self.addrs)
+            known = {p["state"]["addr"] for p in self.peers.values()}
+            # Kandidat yang berkali-kali gagal ditunda (satu alamat mati menahan tiap
+            # putaran gosip sampai batas waktunya); teman yang sudah dikenal tetap
+            # dihubungi tiap putaran.
+            candidates = {a for a in self.addrs if self._fail.get(a, (0, 0.0))[1] <= now}
+            targets = known | candidates
         targets.discard(self.addr)
+        targets = {a for a in targets if now - self._rejected.get(a, 0.0) > REJECT_SKIP}
         payload = self._gossip_payload()
         futs = {self.pool.submit(self.rpc, a, "/gossip", payload, 3): a for a in targets}
         for f in concurrent.futures.as_completed(futs):
             res = f.result()
             if res:
+                self._fail.pop(futs[f], None)
                 self.learn(res)
+            elif futs[f] not in known:
+                self._note_failure(futs[f], now)
         self.check_leader()
+
+    def _note_failure(self, addr, now):
+        """Catat kegagalan alamat kandidat: tunda (15 dtk -> 5 mnt), dan buang yang
+        gagal terus sekitar 40 menit kecuali seed dari config (seed hanya ditunda)."""
+        n = self._fail.get(addr, (0, 0.0))[0] + 1
+        delay = 0.0 if n < 3 else min(300.0, 15.0 * 2 ** (n - 3))
+        if n >= 15 and addr not in (self.cfg.get("seeds") or []):
+            self.addrs.discard(addr)
+            self._fail.pop(addr, None)
+            return
+        self._fail[addr] = (n, now + delay)
+
+    # --- penemuan node lain di LAN ---------------------------------------------
+    def _lan_candidates(self):
+        """Alamat (ip:port gosip) tetangga di /24 milik komputer ini - hanya
+        jaringan pribadi, tak pernah rentang publik."""
+        ip = system.lan_ip()
+        try:
+            me = ipaddress.ip_address(ip)
+        except ValueError:
+            return []
+        if me.version != 4 or not me.is_private or me.is_loopback or me.is_link_local:
+            return []
+        base, port = ip.rsplit(".", 1)[0], self.cfg["port"]
+        return [f"{base}.{n}:{port}" for n in range(1, 255) if f"{base}.{n}" != ip]
+
+    @staticmethod
+    def _probe(addr):
+        """addr kalau di sana ada node It's Me (sidik jarinya: 401 "kode gabung
+        salah" untuk permintaan tanpa kredensial - tak ada rahasia yang dikirim)."""
+        host, port = addr.rsplit(":", 1)
+        try:
+            socket.create_connection((host, int(port)), timeout=0.4).close()
+            with urllib.request.urlopen(f"http://{addr}/status", timeout=1.5):
+                return None  # menjawab tanpa kredensial: bukan node kita
+        except urllib.error.HTTPError as e:
+            try:
+                body = json.loads(e.read() or b"{}")
+            except (ValueError, OSError):
+                return None
+            return addr if e.code == 401 and body.get("error") == "kode gabung salah" else None
+        except OSError:
+            return None
+
+    def discover_lan(self, candidates=None):
+        """Cari node It's Me lain di LAN dan jadikan kandidat gosip. Ini yang
+        mempertemukan komputer-komputer yang sama-sama sudah gabung (kode gabung
+        sama) tapi tak pernah diberi tahu alamat satu sama lain. Kembalikan alamat
+        yang ditemukan."""
+        cands = self._lan_candidates() if candidates is None else list(candidates)
+        with self.lock:
+            skip = {p["state"]["addr"] for p in self.peers.values()} | set(self.addrs) | {self.addr}
+        now = time.time()
+        cands = [a for a in cands if a not in skip and now - self._rejected.get(a, 0.0) > REJECT_SKIP]
+        found = []
+        with concurrent.futures.ThreadPoolExecutor(48) as ex:
+            for addr in ex.map(self._probe, cands):
+                if addr:
+                    found.append(addr)
+        for addr in found:
+            self.addrs.add(addr)
+        if found:
+            log("penemuan LAN: node It's Me ditemukan di", ", ".join(found))
+        return found
+
+    def _maybe_sweep(self, now):
+        if self._sweeping or not self.cfg.get("lan_discovery", True):
+            return
+        alone = len(self.alive()) <= 1
+        if now - self._last_sweep < (SWEEP_ALONE if alone else SWEEP_BUSY):
+            return
+        self._last_sweep = now
+        self._sweeping = True
+
+        def run():
+            try:
+                self.discover_lan()
+            except Exception as e:  # noqa: BLE001 - penemuan tak boleh mengganggu gosip
+                log("penemuan LAN gagal:", e)
+            finally:
+                self._sweeping = False
+
+        threading.Thread(target=run, daemon=True).start()
 
     def gossip_loop(self, stop):
         while not stop.is_set():
@@ -264,13 +397,22 @@ class Cluster:
                 self._become_leader(alive)
 
     def _maybe_take_over(self, alive, cur):
-        """Pemimpin tidak punya bot It's Me padahal node ini punya: ambil alih,
-        supaya bot Telegram jalan di pemimpin. Hanya node ber-bot terbaik."""
-        if cur.get("bot") or not self.bot:
+        """Ambil alih kepemimpinan bila (a) pemimpin tak punya bot It's Me padahal
+        node ini punya, atau (b) pemimpin berprioritas LEBIH RENDAH daripada node ini
+        (mis. Hub menyala lagi setelah PC lain sempat memimpin) - supaya bot Telegram
+        jalan di komputer yang diutamakan. Hanya node ber-bot terbaik, dan bukan di
+        detik-detik awal menyala (pandangan tentang jaringan belum lengkap)."""
+        if not self.bot or time.time() - self.started < SETTLE:
+            return
+        if not cur.get("bot"):
+            reason = f"pemimpin {cur['name']} tidak punya bot It's Me"
+        elif cur.get("priority", 0) < self.priority:
+            reason = f"pemimpin {cur['name']} berprioritas lebih rendah"
+        else:
             return
         best = max((s for s in alive.values() if s.get("bot")), key=self.rank)
         if best["id"] == self.id:
-            log(f"pemimpin {cur['name']} tidak punya bot It's Me; node ini mengambil alih")
+            log(f"{reason}; node ini mengambil alih")
             self._become_leader(alive)
 
     def _become_leader(self, alive):
