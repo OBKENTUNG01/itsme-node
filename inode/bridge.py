@@ -31,7 +31,7 @@ def _post_bytes(url, body, ctype, timeout):
         return r.status
 
 
-def run(cfg, stop, store):
+def run(cfg, stop, store, cluster=None):
     # base/token/name dibaca ULANG tiap putaran (bukan sekali di awal) supaya kalau
     # alamat Hub berubah (mis. pemimpin baru, domain tetap baru dipasang) dan sesuatu
     # memperbarui config.json, jembatan ikut pindah tanpa perlu It's Me Node dinyalakan
@@ -58,12 +58,12 @@ def run(cfg, stop, store):
         if not cmd or "type" not in cmd:
             continue
         try:
-            _handle(base, token, name, cmd, store)
+            _handle(base, token, name, cmd, store, cfg, cluster)
         except Exception as e:  # noqa: BLE001 - jangan sampai loop berhenti
             log("jembatan error:", e)
 
 
-def _handle(base, token, name, cmd, store):
+def _handle(base, token, name, cmd, store, cfg=None, cluster=None):
     cid, t = cmd.get("id"), cmd.get("type")
     if t == "screen":
         try:
@@ -94,6 +94,23 @@ def _handle(base, token, name, cmd, store):
         value = {"ok": True, "mac": mac} if sent else \
             {"ok": False, "error": f'komputer jembatan {name} tidak tahu MAC "{cmd.get("target", "")}"'}
         _result(base, token, name, cid, value)
+    elif t == "seed":
+        # Dititipkan Hub lewat jembatan ini supaya komputer yang SUDAH gabung
+        # sebelum perbaikan gosip (lihat server.py invite()/enroll()) ikut bisa
+        # saling kenal tanpa harus /pasang ulang manual. Diaktifkan langsung di
+        # cluster yang sedang jalan (tak perlu nyala ulang) dan disimpan ke
+        # config.json supaya tetap ada setelah nyala ulang juga.
+        addr = str(cmd.get("addr") or "").strip()
+        if addr and cluster is not None and addr != cluster.addr:
+            cluster.addrs.add(addr)
+            if cfg is not None:
+                seeds = list(cfg.get("seeds") or [])
+                if addr not in seeds:
+                    seeds.append(addr)
+                    cfg["seeds"] = seeds
+                    if hasattr(cfg, "save"):
+                        cfg.save()
+        _result(base, token, name, cid, {"ok": True})
 
 
 def _safe(fn, arg):

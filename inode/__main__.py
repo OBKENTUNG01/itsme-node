@@ -168,7 +168,7 @@ def run(args):
     node.crawler.start(stop)
     if cfg.get("bridge_url") and cfg.get("bridge_token"):
         # Jembatan ke dashboard (tanpa Tailscale), lihat bridge.py.
-        threading.Thread(target=bridge.run, args=(cfg, stop, node.store), daemon=True).start()
+        threading.Thread(target=bridge.run, args=(cfg, stop, node.store, node.cluster), daemon=True).start()
     if not fresh:
         threading.Thread(target=refresh_profile, args=(node, stop, prof is None),
                          daemon=True).start()

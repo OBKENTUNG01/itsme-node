@@ -14,6 +14,15 @@ from urllib.parse import parse_qs, urlsplit
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from inode import bridge, remote, wol  # noqa: E402
+from inode.config import Config  # noqa: E402
+
+
+class _FakeCluster:
+    """Cukup untuk uji "seed" - bridge.py hanya memakai .addr dan .addrs."""
+
+    def __init__(self, addr):
+        self.addr = addr
+        self.addrs = set()
 
 
 class FakeStore:
@@ -113,10 +122,15 @@ class BridgeTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         with open(os.path.join(self.tmp, "a.txt"), "w", encoding="utf-8") as f:
             f.write("halo")
-        self.cfg = {"bridge_url": self.dash.base, "bridge_token": "T", "name": "PC-Uji"}
+        self.cfgdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.cfgdir, ignore_errors=True)
+        self.cfg = Config(self.cfgdir)
+        self.cfg.update(bridge_url=self.dash.base, bridge_token="T", name="PC-Uji")
+        self.cluster = _FakeCluster("127.0.0.1:9")
         self.stop = threading.Event()
         self.store = FakeStore({"pc-ibu": "aabbccddeeff"})
-        self.t = threading.Thread(target=bridge.run, args=(self.cfg, self.stop, self.store), daemon=True)
+        self.t = threading.Thread(target=bridge.run,
+                                  args=(self.cfg, self.stop, self.store, self.cluster), daemon=True)
         self.t.start()
         self.addCleanup(lambda: (self.stop.set(), self.t.join(timeout=3)))
 
@@ -174,6 +188,25 @@ class BridgeTest(unittest.TestCase):
             res = self.dash.wait_result("c5")
         self.assertFalse(res["ok"])
         send.assert_not_called()
+
+    def test_seed_bridged_adds_live_and_persists(self):
+        # Dititipkan Hub lewat jembatan supaya komputer yang SUDAH gabung
+        # sebelum perbaikan gosip ikut diperbaiki, tanpa harus /pasang ulang.
+        self.assertTrue(self._registered())
+        self.dash.enqueue({"id": "c6", "type": "seed", "addr": "192.168.1.5:7171"})
+        res = self.dash.wait_result("c6")
+        self.assertEqual(res, {"ok": True})
+        self.assertIn("192.168.1.5:7171", self.cluster.addrs)  # langsung aktif, tanpa nyala ulang
+        self.assertIn("192.168.1.5:7171", self.cfg["seeds"])
+        reloaded = Config(self.cfgdir)
+        self.assertIn("192.168.1.5:7171", reloaded["seeds"])   # tersimpan, bukan cuma di memori
+
+    def test_seed_ignores_own_address(self):
+        self.assertTrue(self._registered())
+        self.dash.enqueue({"id": "c7", "type": "seed", "addr": self.cluster.addr})
+        res = self.dash.wait_result("c7")
+        self.assertEqual(res, {"ok": True})
+        self.assertEqual(self.cluster.addrs, set())
 
 
 if __name__ == "__main__":

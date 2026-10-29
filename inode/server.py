@@ -66,7 +66,7 @@ def make_server(node):
 
     def status(_):
         alive = cluster.alive()
-        return {"me": cluster.id, "leader": cluster.leader, "phase": cluster.phase,
+        return {"me": cluster.id, "addr": cluster.addr, "leader": cluster.leader, "phase": cluster.phase,
                 "epoch": cluster.epoch, "profile": node.profile,
                 "nodes": sorted(({"name": s["name"], "id": s["id"], "addr": s["addr"],
                                   "working": s.get("working"), "model": s.get("model"),
