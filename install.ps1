@@ -38,6 +38,13 @@ function Install-ItsMeNode {
         $hub = "" + (Get-Content $cfgPath -Raw | ConvertFrom-Json).bridge_url
         $hub = $hub.TrimEnd("/")
     }
+    $hadCode = $false
+    if (Test-Path $cfgPath) {
+        $hadCode = [bool](Get-Content $cfgPath -Raw | ConvertFrom-Json).join_code
+    }
+    if ($hub -and -not $invite -and -not $env:ITSME_JOIN -and -not $hadCode) {
+        throw "Gabung-ulang via sidik jari dinonaktifkan demi keamanan. Minta kode undangan sekali-pakai baru dengan /pasang, atau berikan ITSME_JOIN secara eksplisit."
+    }
 
     function Refresh-Path {
         $env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
@@ -116,26 +123,6 @@ function Install-ItsMeNode {
         Say "Diterima oleh $($joined.from)."
     }
 
-    # 4c. Gabung-ulang otomatis (install ulang aplikasi, OS masih sama): tanpa kode
-    #     undangan & belum punya kode gabung, tapi Hub diketahui dari config lama.
-    #     Sidik jari perangkat kerasnya tetap sama, jadi Hub mengenalinya kembali.
-    $hadCode = (Test-Path $cfgPath) -and ((Get-Content $cfgPath -Raw | ConvertFrom-Json).join_code)
-    if (-not $joined -and -not $env:ITSME_JOIN -and -not $hadCode -and $hub) {
-        Push-Location $App
-        $fp = & $py -m inode fingerprint 2>$null | Select-Object -Last 1
-        Pop-Location
-        if ($fp) { $fp = "$fp".Trim() } else { $fp = "" }
-        if ($fp) {
-            Say "Mencoba gabung otomatis lewat Hub (komputer mungkin dikenal dari sebelumnya) ..."
-            $body = @{ fingerprint = $fp; name = $env:COMPUTERNAME } | ConvertTo-Json
-            try {
-                $joined = Invoke-RestMethod "$hub/api/node/enroll" -Method Post -Body $body `
-                    -ContentType "application/json" -TimeoutSec 20
-            } catch { $joined = $null }
-            if ($joined.join_code) { Say "Berhasil gabung otomatis dari $($joined.from) - tanpa kode undangan baru." }
-            else { $joined = $null; Say "Belum dikenali Hub; lanjut sebagai komputer baru (pakai /pasang kalau perlu)." }
-        }
-    }
 
     # 5. Kode gabung + jembatan ke Hub
     $cfg = if (Test-Path $cfgPath) { Get-Content $cfgPath -Raw | ConvertFrom-Json } else { [pscustomobject]@{} }

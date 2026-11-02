@@ -15,6 +15,12 @@ from .invites import Invites
 from .cluster import log
 
 LOCAL = {"127.0.0.1", "::1"}
+# Bounded POST bodies: 16 MiB normally; /fs/write permits 128 MiB to carry a
+# 100 MB file encoded as base64. Reject oversized bodies before reading them.
+MAX_POST_BODY_BYTES = 16 * 1024 * 1024
+MAX_THINK_BODY_BYTES = MAX_POST_BODY_BYTES
+MAX_FS_WRITE_BODY_BYTES = 128 * 1024 * 1024  # cukup untuk berkas biner 100 MB (base64)
+MAX_ENROLL_BODY_BYTES = 64 * 1024  # drain hanya body lama yang kecil sebelum 410
 # Rute akses jarak jauh (layar, input, berkas). Boleh menyebut ?node=<id> untuk
 # komputer lain; node ini meneruskannya ke sana lewat Tailscale.
 REMOTE_PATHS = {"/screen", "/input", "/fs/list", "/fs/read", "/fs/download", "/fs/write"}
@@ -89,6 +95,9 @@ def make_server(node):
                                   "working": s.get("working"), "model": s.get("model"),
                                   "score": s.get("score"), "stats": s.get("stats"),
                                   "bot": bool(s.get("bot")),
+                                  # Kesiapan berpikir tiap komputer (model, kecepatan, antrean): dibaca
+                                  # bot untuk membagi pekerjaan ke semua komputer (thinker.py).
+                                  "think": s.get("think"),
                                   "leader": s["id"] == cluster.leader}
                                  for s in alive.values()), key=lambda s: s["name"]),
                 # Komputer yang pernah satu LAN langsung dengan node ini, hidup atau
@@ -106,6 +115,29 @@ def make_server(node):
             return None
         return {"summary": llm.summarize(cfg["ollama_url"], node.profile["model"],
                                          p.get("title", ""), p.get("text", ""))}
+
+    def think(p):
+        """Berpikir (chat dengan model lokal). Dengan 'node' = id komputer lain, permintaan diteruskan
+        ke sana (ditandatangani) - bot cukup bicara dengan node di komputernya sendiri."""
+        target = p.get("node")
+        if target and target != cluster.id:
+            addr = (cluster.alive().get(target) or {}).get("addr")
+            if not addr:
+                return {"ok": False, "kind": "gone", "error": "komputer tidak ditemukan atau sedang mati"}
+            rest = {k: v for k, v in p.items() if k != "node"}
+            try:
+                wait = min(max(float(p.get("timeout") or 900), 5.0), 3600.0)
+            except (TypeError, ValueError):
+                wait = 900.0
+            res = cluster.rpc(addr, "/think", rest, timeout=wait + 20)
+            if res is None:
+                return {"ok": False, "kind": "unreachable",
+                        "error": "komputer tujuan tak menjawab (mati, sibuk memilih pemimpin, atau terputus)"}
+            return res
+        thinker = getattr(node, "thinker", None)
+        if thinker is None:
+            return {"ok": False, "kind": "disabled", "error": "layanan berpikir belum menyala"}
+        return thinker.handle(p)
 
     def search(p):
         return {"docs": store.search(p.get("q", ""), int(p.get("limit", 8)))}
@@ -161,10 +193,10 @@ def make_server(node):
         invites.add(p.get("code"), p.get("ttl"), p.get("env"), bool(p.get("reusable")))
         return {"ok": True}
 
-    def invite(p):
+    def invite(p, ip):
         # Satu-satunya jalur tanpa kode gabung: komputer baru menukar kode undangan.
         try:
-            env = invites.redeem(p.get("code"))
+            env = invites.redeem(p.get("code"), caller=ip)
         except PermissionError as e:
             return 429, {"error": str(e)}
         if env is None:
@@ -175,25 +207,12 @@ def make_server(node):
         # pernah saling tahu alamat - tak ada cara lain menemukan satu sama lain).
         return 200, {"join_code": cfg["join_code"], "env": env, "from": cfg["name"], "seed": cluster.addr}
 
-    def enroll(p, ip):
-        """Komputer yang DULU pernah terdaftar lalu diinstal ulang gabung lagi tanpa
-        kode undangan baru: cukup sidik jari perangkat kerasnya (tetap walau OS
-        diinstal ulang) yang sudah dikenal jaringan, dan ia harus di jaringan Tailscale."""
-        if ip not in LOCAL and not _in_tailnet(ip) and not _in_lan(ip):
-            # Penjaga ini dulu MATI: dashboard meneruskan permintaan dari 127.0.0.1,
-            # jadi setiap panggilan lewat tunnel terlihat "lokal". Sekarang dashboard
-            # mengirim IP asli di X-Itsme-Client-IP (hanya dipercaya dari peer lokal).
-            return 403, {"error": "gabung-ulang otomatis hanya dari jaringan lokal/Tailscale. "
-                                  "Dari internet pakai kode undangan (/pasang)."}
-        fp = str(p.get("fingerprint") or "").strip()
-        if not fp:
-            return 400, {"error": "sidik jari kosong"}
-        if not store.is_enrolled(fp):
-            return 404, {"error": "komputer ini belum pernah terdaftar; pakai /pasang sekali dulu"}
-        store.enroll_device(fp, p.get("name"))
-        env = itsme.env_bundle(cfg) if itsme.ready(cfg) else {}
-        log("info", "gabung-ulang otomatis oleh", str(p.get("name", "?"))[:60], fp[:8])
-        return 200, {"join_code": cfg["join_code"], "env": env, "from": cfg["name"], "seed": cluster.addr}
+    def enroll():
+        """Gabung ulang berbasis fingerprint dinonaktifkan: fingerprint bukan bukti rahasia.
+
+        Komputer yang kehilangan konfigurasi harus memakai kode undangan acak sekali pakai.
+        """
+        return 410, {"error": "gabung ulang via sidik jari dinonaktifkan; gunakan kode undangan sekali pakai (/pasang)"}
 
     # --- akses jarak jauh: layar, input, berkas (lokal atau diteruskan ke node lain) ---
     def _addr_of(node_id):
@@ -258,6 +277,7 @@ def make_server(node):
         "/links": lambda p: {"added": store.add_links([tuple(r) for r in p.get("rows", [])])},
         "/doc": lambda p: {"ok": store.add_doc(p["url"], p["title"], p["summary"], p["node"])},
         "/summarize": summarize,
+        "/think": think,
         "/search": search,
         "/status": status,
         "/ask": ask,
@@ -320,9 +340,9 @@ def make_server(node):
                     return self._reply(403, {"error": "halaman ini hanya dari komputer ini"})
                 return self._reply_raw(200, "text/html; charset=utf-8", viewer.PAGE.encode())
             if path == "/invite":
-                return self._reply(*invite(payload))
+                return self._reply(*invite(payload, self._client_ip()))
             if path == "/enroll":
-                return self._reply(*enroll(payload, self._client_ip()))
+                return self._reply(*enroll())
             if path == "/invite-new":
                 if self._client_ip() not in LOCAL:
                     return self._reply(403, {"error": "hanya dari komputer ini"})
@@ -352,7 +372,25 @@ def make_server(node):
             self._handle({k: v[0] for k, v in qs.items()})
 
         def do_POST(self):
-            n = int(self.headers.get("Content-Length") or 0)
+            path = urlsplit(self.path).path
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                if path == "/enroll":
+                    return self._reply(*enroll())
+                return self._reply(400, {"error": "Content-Length tidak valid"})
+            if n < 0:
+                if path == "/enroll":
+                    return self._reply(*enroll())
+                return self._reply(400, {"error": "Content-Length tidak valid"})
+            if path == "/enroll":
+                if 0 < n <= MAX_ENROLL_BODY_BYTES:
+                    self.rfile.read(n)
+                return self._reply(*enroll())
+            limit = MAX_FS_WRITE_BODY_BYTES if path == "/fs/write" else MAX_POST_BODY_BYTES
+            if n > limit:
+                message = "permintaan berpikir terlalu besar" if path == "/think" else "permintaan terlalu besar"
+                return self._reply(413, {"error": message})
             self._raw = self.rfile.read(n) if n else b""  # isi mentah: ikut ditandatangani
             try:
                 payload = json.loads(self._raw or b"{}")

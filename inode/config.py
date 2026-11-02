@@ -34,6 +34,17 @@ DEFAULTS = {
     # "auto" = dipilih dari hasil tes; "" = tanpa model; atau nama model Ollama.
     "model": "auto",
     "ollama_url": "http://127.0.0.1:11434",
+    # BERPIKIR untuk bot It's Me ("otak lokal bersama", lihat thinker.py): komputer ini ikut berpikir
+    # lewat rute /think. Ollama dijaga hidup, model tetap termuat walau komputer sedang dipakai.
+    "think": True,
+    # "" = model hasil tes kemampuan; isi nama model Ollama untuk memaksa model tertentu.
+    "think_model": "",
+    # Permintaan berpikir yang dikerjakan bersamaan (0 = otomatis: 1 untuk CPU, 2 untuk GPU besar).
+    "think_parallel": 0,
+    # Paling banyak sekian permintaan boleh menunggu giliran; lebihnya ditolak (bot memakai komputer lain).
+    "think_queue": 4,
+    # Windows: cegah tidur otomatis hanya selama ada permintaan berpikir; idle tetap boleh tidur.
+    "think_keep_awake": True,
     # Prioritas tambahan saat pemilihan pemimpin (lebih besar = lebih diutamakan).
     "leader_priority": 0,
     # Perintah yang dijalankan saat node ini menjadi / berhenti jadi pemimpin

@@ -154,6 +154,7 @@ class Crawler:
         self.last_seed = 0
         self.pages_done = 0
         self.n_workers = 0
+        self.thinker = None  # riset latar mengalah selama komputer ini sedang berpikir untuk bot
 
     # --- pilih pekerjaan ------------------------------------------------------
     def _refresh_owned(self):
@@ -274,6 +275,8 @@ class Crawler:
 
     # --- loop ------------------------------------------------------------------
     def can_work(self):
+        if self.thinker is not None and self.thinker.busy():
+            return False  # berpikir untuk bot didahulukan daripada riset latar
         return self.cluster.working and not self.cluster.paused
 
     def worker(self, stop):

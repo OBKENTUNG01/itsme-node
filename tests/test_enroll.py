@@ -1,8 +1,9 @@
-"""Uji gabung-ulang otomatis setelah install ulang: sidik jari + endpoint /enroll."""
+"""Uji endpoint rejoin yang dinonaktifkan dan alur undangan aman."""
 
 import json
 import os
 import shutil
+import socket
 import sys
 import tempfile
 import unittest
@@ -129,22 +130,6 @@ class EnrollEndpointTest(unittest.TestCase):
         with urllib.request.urlopen(req, timeout=10) as r:
             return r.status, json.loads(r.read())
 
-    def test_proxy_cannot_smuggle_public_ip_into_enroll(self):
-        """Dashboard meneruskan IP asli: permintaan dari internet ditolak, LAN tetap boleh.
-
-        Tanpa ini penjaga /enroll selalu melihat 127.0.0.1 (peer = dashboard sendiri),
-        jadi jalur publik bisa memanen token bot + kata sandi + kunci API.
-        """
-        self.store.enroll_device("fp-lama", "Laptop")
-        with self.assertRaises(urllib.error.HTTPError) as cm:
-            self.post("/enroll", {"fingerprint": "fp-lama", "name": "Laptop"},
-                      {"X-Itsme-Client-IP": "8.8.8.8"})
-        self.assertEqual(cm.exception.code, 403)
-        code, res = self.post("/enroll", {"fingerprint": "fp-lama", "name": "Laptop"},
-                              {"X-Itsme-Client-IP": "192.168.1.20"})
-        self.assertEqual(code, 200)
-        self.assertEqual(res["env"]["TELEGRAM_BOT_TOKEN"], "123:abc")
-
     def test_spoofed_header_ignored_for_non_local_peer(self):
         """Header hanya dipercaya dari peer lokal (dashboard), bukan dari internet."""
         hdr = {"X-Itsme-Client-IP": "127.0.0.1"}
@@ -155,21 +140,62 @@ class EnrollEndpointTest(unittest.TestCase):
     def test_unknown_fingerprint_refused(self):
         with self.assertRaises(urllib.error.HTTPError) as cm:
             self.post("/enroll", {"fingerprint": "belum-terdaftar", "name": "X"})
-        self.assertEqual(cm.exception.code, 404)
+        self.assertEqual(cm.exception.code, 410)
 
-    def test_known_fingerprint_rejoins_with_code_and_env(self):
-        self.store.enroll_device("fp-lama", "Laptop")        # dulu pernah terdaftar
-        code, res = self.post("/enroll", {"fingerprint": "fp-lama", "name": "Laptop"})
-        self.assertEqual(code, 200)
-        self.assertEqual(res["join_code"], "RAHASIA-GABUNG")  # kode gabung dikembalikan
-        self.assertEqual(res["env"]["TELEGRAM_BOT_TOKEN"], "123:abc")  # bot ikut pulih
-        self.assertNotIn("ITSME_DATA_DIR", res["env"])        # kunci per-komputer dibuang
-        self.assertEqual(res["seed"], "127.0.0.1:0")           # titik awal gosip ikut dikirim
+    def test_known_fingerprint_alone_never_returns_cluster_or_bot_secrets(self):
+        self.store.enroll_device("fp-lama", "Laptop")
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            self.post("/enroll", {"fingerprint": "fp-lama", "name": "Laptop"},
+                      {"X-Itsme-Client-IP": "192.168.1.20"})
+        self.assertEqual(cm.exception.code, 410)
+        res = json.loads(cm.exception.read())
+        self.assertNotIn("join_code", res)
+        self.assertNotIn("env", res)
+        self.assertNotIn("seed", res)
+
+    def test_retired_enroll_rejects_before_reading_request_body(self):
+        port = self.srv.server_address[1]
+        sock = socket.create_connection(("127.0.0.1", port), timeout=5)
+        sock.settimeout(2)
+        try:
+            request = (
+                b"POST /enroll HTTP/1.1" + bytes((13, 10))
+                + b"Host: localhost" + bytes((13, 10))
+                + b"Content-Length: 1000000" + bytes((13, 10, 13, 10))
+            )
+            sock.sendall(request)
+            try:
+                response = sock.recv(4096)
+            except socket.timeout:
+                response = b""
+        finally:
+            sock.close()
+        self.assertIn(b"410", response)
+
+    def test_oversized_invite_is_rejected_before_reading_request_body(self):
+        port = self.srv.server_address[1]
+        sock = socket.create_connection(("127.0.0.1", port), timeout=5)
+        sock.settimeout(2)
+        try:
+            length = str(server.MAX_THINK_BODY_BYTES + 1).encode("ascii")
+            request = (
+                b"POST /invite HTTP/1.1" + bytes((13, 10))
+                + b"Host: localhost" + bytes((13, 10))
+                + b"Content-Length: " + length + bytes((13, 10, 13, 10))
+            )
+            sock.sendall(request)
+            try:
+                response = sock.recv(4096)
+            except socket.timeout:
+                response = b""
+        finally:
+            sock.close()
+        self.assertIn(b"413", response)
 
     def test_empty_fingerprint(self):
         with self.assertRaises(urllib.error.HTTPError) as cm:
             self.post("/enroll", {"fingerprint": "", "name": "X"})
-        self.assertEqual(cm.exception.code, 400)
+        self.assertEqual(cm.exception.code, 410)
 
     def test_invite_endpoint_also_returns_seed(self):
         # Tanpa "seed", komputer baru yang menukar kode undangan tidak pernah
@@ -180,6 +206,18 @@ class EnrollEndpointTest(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertEqual(res["join_code"], "RAHASIA-GABUNG")
         self.assertEqual(res["seed"], "127.0.0.1:0")
+
+    def test_wrong_invite_guesses_from_one_ip_do_not_block_another_ip(self):
+        self.post("/invite-new", {"code": "UNDANGAN-VALID-123", "ttl": 60, "env": {"K": "V"}})
+        for _ in range(30):
+            with self.assertRaises(urllib.error.HTTPError) as cm:
+                self.post("/invite", {"code": "SALAH-0000-0000"},
+                          {"X-Itsme-Client-IP": "192.168.1.20"})
+            self.assertEqual(cm.exception.code, 404)
+        code, res = self.post("/invite", {"code": "UNDANGAN-VALID-123"},
+                              {"X-Itsme-Client-IP": "192.168.1.30"})
+        self.assertEqual(code, 200)
+        self.assertEqual(res["env"], {"K": "V"})
 
     def test_enrolled_sync_endpoint(self):
         self.store.enroll_device("fp1", "A")

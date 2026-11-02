@@ -96,7 +96,7 @@ def _handle(base, token, name, cmd, store, cfg=None, cluster=None):
         _result(base, token, name, cid, value)
     elif t == "seed":
         # Dititipkan Hub lewat jembatan ini supaya komputer yang SUDAH gabung
-        # sebelum perbaikan gosip (lihat server.py invite()/enroll()) ikut bisa
+        # sebelum perbaikan gosip (lihat server.py invite()) ikut bisa
         # saling kenal tanpa harus /pasang ulang manual. Diaktifkan langsung di
         # cluster yang sedang jalan (tak perlu nyala ulang) dan disimpan ke
         # config.json supaya tetap ada setelah nyala ulang juga.

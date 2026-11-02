@@ -1,6 +1,7 @@
 """Info perangkat: RAM, GPU, status menganggur, Tailscale, sidik jari, dan tes."""
 
 import ctypes
+from ctypes import wintypes
 import hashlib
 import json
 import os
@@ -168,11 +169,19 @@ def tailscale_peers():
     return ips
 
 
+# Versi tes kemampuan. Dinaikkan kalau cara memilih/menguji model berubah, supaya profil lama
+# (disimpan 7 hari) diuji ulang. 2 = tangga keamanan CPU-saja + model 4B non-berpikir.
+BENCH_VERSION = 2
+
 # (nama model, RAM minimal GB, VRAM yang membuatnya cepat)
+# Tag "qwen3:4b" kini menunjuk ke build THINKING-2507 yang SELALU berpikir (parameter think:false
+# diabaikan, penalarannya bocor ke jawaban) - tidak cocok untuk merangkum maupun menjawab. Yang
+# dipakai varian instruct 2507 (non-berpikir). qwen3:1.7b/8b/14b adalah build hibrida asli: think:false dipatuhi.
+MODEL_4B = "qwen3:4b-instruct-2507-q4_K_M"
 MODELS = [
     ("qwen3:14b", 24, 12),
     ("qwen3:8b", 16, 8),
-    ("qwen3:4b", 10, 4),
+    (MODEL_4B, 10, 4),
     ("qwen3:1.7b", 6, 2),
 ]
 
@@ -185,26 +194,88 @@ def pick_model(ram, vram):
             return name
     # Tanpa GPU: model kecil supaya tidak terlalu lambat di CPU.
     if ram >= 10:
-        return "qwen3:4b"
+        return MODEL_4B
     if ram >= 6:
         return "qwen3:1.7b"
     return ""
 
 
-def start_ollama():
-    """Nyalakan Ollama kalau terpasang tapi belum jalan (mis. baru dipasang winget)."""
+BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
+PROCESS_SET_INFORMATION = 0x0200
+# Proses milik Ollama yang menjalankan model; semuanya diturunkan prioritasnya.
+OLLAMA_PROCS = {"ollama.exe", "ollama_llama_server.exe", "llama-server.exe", "ollama-runner.exe"}
+
+
+def start_ollama(low_priority=True):
+    """Nyalakan Ollama kalau terpasang tapi belum jalan (mis. baru dipasang winget).
+
+    low_priority: berjalan di bawah prioritas normal (Windows), supaya komputer yang sedang
+    dipakai pemiliknya tidak tersendat; proses model yang dibuatnya mewarisi prioritas itu."""
     exe = shutil.which("ollama")
     if not exe and IS_WIN:
         p = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Ollama", "ollama.exe")
         exe = p if os.path.exists(p) else None
     if not exe:
         return False
+    flags = _NO_WINDOW | (0x00000008 if IS_WIN else 0)  # DETACHED_PROCESS
+    if IS_WIN and low_priority:
+        flags |= BELOW_NORMAL_PRIORITY_CLASS
     try:
         subprocess.Popen([exe, "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                         creationflags=_NO_WINDOW | (0x00000008 if IS_WIN else 0))  # DETACHED_PROCESS
+                         creationflags=flags)
         return True
     except OSError:
         return False
+
+
+def ollama_pids():
+    """PID proses Ollama dan runner modelnya (Windows). Kosong di sistem lain."""
+    if not IS_WIN:
+        return []
+    out = _run(["tasklist", "/FO", "CSV", "/NH"], timeout=15)
+    pids = []
+    for line in out.splitlines():
+        parts = [p.strip('"') for p in line.split('","')]
+        if len(parts) >= 2 and parts[0].strip('"').lower() in OLLAMA_PROCS:
+            try:
+                pids.append(int(parts[1]))
+            except ValueError:
+                pass
+    return pids
+
+
+def lower_ollama_priority(done):
+    """Turunkan prioritas semua proses Ollama yang belum (set `done` berisi PID yang sudah).
+    Hanya mengatur giliran CPU - tidak menghentikan atau membatasi apa pun. Mengembalikan jumlah
+    proses yang baru diturunkan."""
+    if not IS_WIN:
+        return 0
+    count = 0
+    try:
+        kernel = ctypes.windll.kernel32
+        # HANDLE adalah pointer-sized; ctypes default menganggap hasil C int (32-bit di Windows).
+        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.SetPriorityClass.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel.SetPriorityClass.restype = wintypes.BOOL
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel.CloseHandle.restype = wintypes.BOOL
+    except (AttributeError, OSError):
+        return 0
+    for pid in ollama_pids():
+        if pid in done:
+            continue
+        handle = kernel.OpenProcess(PROCESS_SET_INFORMATION, False, pid)
+        if not handle:
+            done.add(pid)  # bukan milik pengguna ini / sudah hilang: jangan dicoba terus
+            continue
+        try:
+            if kernel.SetPriorityClass(handle, BELOW_NORMAL_PRIORITY_CLASS):
+                count += 1
+        finally:
+            kernel.CloseHandle(handle)
+        done.add(pid)
+    return count
 
 
 def wait_ollama(url, seconds=60):
@@ -246,7 +317,8 @@ def benchmark(cfg):
     workers = cfg["workers"] or max(2, min(8, threads // 2 + (2 if score > 60 else 0)))
     return {"ram": ram, "gpu": gname, "vram": vram, "threads": threads,
             "model": model, "tps": round(tps, 1), "score": score,
-            "workers": workers, "tested": int(time.time()), "retry": retry}
+            "workers": workers, "tested": int(time.time()), "retry": retry,
+            "bench_v": BENCH_VERSION}
 
 
 def provisional_profile(cfg):

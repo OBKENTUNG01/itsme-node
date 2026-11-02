@@ -104,6 +104,15 @@ class GuessLimitTest(unittest.TestCase):
             for _ in range(31):
                 inv.redeem("SALAH-0000-0000")
 
+    def test_wrong_guesses_from_one_caller_do_not_block_another(self):
+        inv = Invites(clock=FakeClock())
+        inv.add("ABCD-1234-XYZQ", 300, {"K": "V"})
+        for _ in range(30):
+            self.assertIsNone(inv.redeem("SALAH-0000-0000", caller="attacker"))
+        self.assertEqual(inv.redeem("ABCD-1234-XYZQ", caller="owner"), {"K": "V"})
+        with self.assertRaises(PermissionError):
+            inv.redeem("ABCD-1234-XYZQ", caller="attacker")
+
 
 if __name__ == "__main__":
     unittest.main()

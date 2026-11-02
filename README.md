@@ -43,11 +43,11 @@ irm https://raw.githubusercontent.com/OBKENTUNG01/itsme-node/main/install.ps1 | 
   (lihat `PANDUAN_AKSES_JARAK_JAUH.md`). Komputer sejaringan juga bisa pakai alamat LAN Hub.
 - Kode gabung manual tetap bisa: `$env:ITSME_JOIN='kode'; irm …/install.ps1 | iex`.
 
-**Install ulang OS? Komputer tidak hilang dari jaringan.** Kalau komputer yang sudah
-terdaftar diinstal ulang Windows-nya, kirim `/pasang` lagi lalu tempel baris barunya.
-Jaringan mengenali komputer itu dari **sidik jari perangkat kerasnya** (UUID
-motherboard/BIOS — tetap sama walau OS baru) dan mengembalikan kode gabung + pengaturan
-bot otomatis lewat Hub, tanpa kode undangan baru kalau komputer itu **pernah** terdaftar.
+**Install ulang OS?** Jika `config.json` lama masih ada, kode gabung yang tersimpan tetap
+bisa dipakai. Jika konfigurasi hilang, minta kode undangan baru lewat `/pasang` lalu tempel
+barisnya. Gabung ulang otomatis hanya berdasarkan sidik jari perangkat keras sudah
+dinonaktifkan: sidik jari adalah identitas yang dapat ikut terlihat pada gossip HTTP, bukan
+bukti rahasia bahwa pemanggil memiliki komputer itu.
 
 ## Cara kerja
 
@@ -67,13 +67,76 @@ bot otomatis lewat Hub, tanpa kode undangan baru kalau komputer itu **pernah** t
   lagi atau baru ketemu merebut kembali posisi dari komputer berprioritas lebih rendah
   (lihat "Prioritas pemimpin" di bawah).
 - Saat komputer menganggur (default 5 menit tanpa input), node menjelajah internet,
-  merangkum halaman dengan model lokal, dan menyimpannya. Begitu komputer dipakai lagi,
-  riset dijeda dan model dilepas dari memori.
+  merangkum halaman dengan model lokal, dan menyimpannya. Begitu komputer diakses jarak
+  jauh, riset dijeda. Model **tidak lagi dilepas** dari memori kalau `think` aktif (bawaan):
+  komputer tetap siap berpikir untuk bot (lihat "Berpikir bersama" di bawah).
 - Domain dibagi antar node yang menganggur (weighted rendezvous hashing), sehingga
   komputer cepat mendapat bagian lebih besar dan satu situs hanya dikunjungi satu node.
 - Komputer lambat tanpa model tetap ikut menjelajah dan meminta rangkuman dari node yang punya model.
 - Setiap hasil riset disalin ke satu node lain sebagai cadangan.
 - Pembaruan otomatis dari repo ini setiap 30 menit.
+
+## Berpikir bersama ("otak lokal bersama")
+
+Bot It's Me (di komputer pemimpin) membagi pekerjaan **berpikir** ke semua komputer yang sudah
+bergabung, lewat rute `POST /think` (bertanda tangan; bot cukup bicara dengan node di komputernya
+sendiri, node meneruskan ke komputer tujuan dengan `"node": "<id>"`). Isi `/status` tiap komputer
+memuat `think`: model, kecepatan nyata (token/detik), antrean, apakah `think:false` dipatuhi, dan
+apakah berjalan di CPU saja. Itu ikut bergosip tiap 2 detik, jadi bot selalu tahu siapa yang siap.
+
+Ini load-balancing **per permintaan** untuk menambah throughput, bukan distributed inference: satu
+permintaan dikerjakan utuh oleh satu node/model; bobot model tidak dibagi antar-komputer. POST aktif
+membatasi badan 16 MiB dan menolak lebih awal dengan HTTP 413; `/fs/write` diberi 128 MiB agar unggah
+berkas 100 MB yang dienkode base64 tetap muat. Batas eksplisit ini membatasi konsumsi per permintaan
+(lihat [MITRE CWE-400](https://cwe.mitre.org/data/definitions/400.html)). Endpoint rejoin lama `/enroll`
+berbeda: ia langsung menolak HTTP 410 sebelum membaca badan, karena jalur sidik jari sudah dinonaktifkan.
+
+Supaya komputer **tidak berhenti berpikir walau sedang dipakai** (mengetik, dsb.):
+
+- **Ollama dijaga hidup.** Mati → dinyalakan lagi otomatis (jeda 15, 30, 45 ... detik, paling lama 5 menit).
+- **Model tetap termuat** (`keep_alive: -1`); tidak dilepas saat komputer dipakai. Kalau dilepas pihak lain,
+  penjaga memuatnya lagi dalam ±45 detik.
+- **Prioritas rendah (best-effort, Windows).** Proses server dan runner Ollama yang terdeteksi berjalan
+  di bawah prioritas normal; ini hanya mengatur giliran CPU, bukan membatasi penggunaan CPU/RAM, sehingga
+  beban model masih dapat membuat komputer lambat atau kehabisan memori. Pemindaian berdasarkan nama proses
+  juga dapat menurunkan prioritas instance Ollama lain di komputer yang sama, bukan hanya instance yang
+  dipakai node ini.
+- **Mencegah tidur otomatis hanya selama ada permintaan berpikir (Windows, bawaan aktif)** dengan
+  `SetThreadExecutionState`; saat idle node melepaskannya agar Windows boleh tidur. Microsoft
+  [memperingatkan](https://learn.microsoft.com/en-us/windows/desktop/Power/system-sleep-criteria?redirectedfrom=MSDN)
+  bahwa menahan permintaan itu terus-menerus dapat menguras baterai perangkat Modern Standby;
+  setel `"think_keep_awake": false` di `config.json` untuk menonaktifkan pencegahan tidur bahkan saat bekerja. Sleep/tutup laptop oleh
+  pemilik tetap berlaku — itu keputusan pemilik, bukan "mati sendiri". Di sistem selain Windows fitur ini
+  tidak diterapkan.
+- **Riset latar mengalah** selama ada permintaan berpikir.
+- **Tangga keamanan.** Kalau proses model mati mendadak (mis. `ggml_vulkan: device lost` di kartu grafis
+  lama), panggilan diulang dengan konteks lebih kecil lalu CPU saja; tingkat yang jalan diingat di
+  `think_state.json`. Dulu tes kemampuan mencatat komputer seperti ini "0 tok/s, tanpa model" dan
+  komputernya tidak pernah dipakai berpikir.
+
+Satu-satunya saat SEMUA komputer berhenti berpikir: **pemimpin mati dan pemilihan pemimpin baru
+berjalan** (fase `electing`, ±20 detik) — `/think` menjawab 503 sampai pemimpin baru terdengar, lalu
+langsung berpikir lagi. Rancangan ini sudah ada sejak awal (lihat docstring `cluster.py`).
+
+Model yang dipakai: hasil tes kemampuan (`qwen3:14b/8b/4b/1.7b` menurut RAM & VRAM), atau paksa dengan
+`think_model`. **Catatan model 4B:** tag polos `qwen3:4b` kini menunjuk build *thinking-2507* yang SELALU
+berpikir (`think:false` diabaikan, penalarannya bocor ke jawaban), jadi tingkat 4B memakai
+`qwen3:4b-instruct-2507-q4_K_M`. Setelah pembaruan, komputer menguji ulang kemampuannya sekali
+(`BENCH_VERSION` 2) dan, bila perlu, mengunduh model itu (±2,5 GB).
+
+Pengaturan di `config.json` (semuanya opsional):
+
+| Kunci | Bawaan | Arti |
+|---|---|---|
+| `think` | `true` | `false` = komputer ini tidak ikut berpikir (dan model kembali dilepas saat dipakai) |
+| `think_model` | `""` | paksa model Ollama tertentu; kosong = hasil tes kemampuan |
+| `think_parallel` | `0` | permintaan bersamaan; 0 = otomatis (1 untuk CPU, 2 untuk GPU ≥ 6 GB) |
+| `think_queue` | `4` | permintaan yang boleh menunggu giliran; lebihnya ditolak (bot pakai komputer lain) |
+| `think_keep_awake` | `true` | cegah tidur otomatis selama node hidup |
+
+Batas jujur: komputer berRAM < 6 GB (atau tanpa Ollama) tidak punya model dan tidak ikut berpikir;
+kecepatan menurut perangkat keras (±5–10 token/detik untuk model 1,7–4B di CPU biasa). Model lokal
+kecil tidak sepintar model cloud — bot menutupinya dengan alur memahami → menjawab → memeriksa.
 
 ## Saling menemukan & keamanan antar-komputer
 
@@ -98,6 +161,11 @@ selama masa peralihan server **juga menerima Bearer lama** (`accept_legacy_beare
 bawaan) dan klien jatuh ke Bearer otomatis untuk node lama yang menolak tanda tangan.
 **Setelah SEMUA komputer ter-update, setel `accept_legacy_bearer` ke `false`** supaya token
 lama yang pernah terlihat di jaringan tak berguna lagi.
+
+**HMAC bukan enkripsi.** Permintaan antar-node saat ini memakai HTTP; prompt, jawaban, dan metadata dapat
+dibaca oleh pengamat jaringan. Gunakan hanya LAN tepercaya atau jaringan/tunnel terenkripsi, percayai setiap
+komputer yang bergabung, dan jangan membuka port node ke internet publik. HMAC memberi autentikasi/integritas
+serta anti-replay untuk mode tanda tangan, bukan kerahasiaan isi.
 
 **Prioritas pemimpin.** Urutan menang saat dua klaim pemimpin bertemu: punya bot It's Me →
 **prioritas** → lama memimpin → skor → id. Prioritas didahulukan sebelum lama memimpin supaya
@@ -179,10 +247,19 @@ selama node ini pemimpin, supaya alamat publik mengikuti pemimpin saat failover
 API lokal (tanpa token dari 127.0.0.1): `GET http://127.0.0.1:7171/status`,
 `POST /ask {"q": "..."}`, `GET /recent`, `POST /invite-new {"code", "ttl", "env"}`
 (hanya dari 127.0.0.1, dipakai `/pasang`). `POST /invite {"code"}` menukar kode undangan
-sekali pakai. `POST /enroll {"fingerprint","name"}` mengembalikan kode gabung untuk komputer
-yang sidik jarinya sudah terdaftar (gabung-ulang setelah install ulang). Keduanya jalur tanpa
-token kode gabung, dan biasanya dipanggil lewat dashboard Hub (`/api/node/invite`, `/api/node/enroll`)
-yang meneruskannya ke sini dari 127.0.0.1 — jadi komputer baru tidak perlu Tailscale.
+sekali pakai; batas salah 30 tebakan per alamat pemanggil per 10 menit agar satu klien tidak
+mengunci semua undangan. Jalur ini tanpa kode gabung karena kode undangannya sendiri adalah
+otorisasi. Biasanya dashboard Hub meneruskan `/api/node/invite` ke sini dari 127.0.0.1,
+sehingga komputer baru tidak perlu Tailscale. Endpoint lama `POST /enroll` dan
+`/api/node/enroll` sekarang selalu membalas HTTP 410 dan tidak mengembalikan kode gabung,
+token jembatan, atau `.env`; jika konfigurasi perangkat hilang, gunakan undangan sekali-pakai.
+
+Tanda tangan HMAC antar-node menjaga autentikasi/integritas, **bukan enkripsi**. Gossip masih
+menggunakan HTTP, sehingga pengamat jaringan dapat membaca fingerprint dalam payload; karena
+itu fingerprint tidak boleh dipakai sebagai kredensial. OWASP menyarankan fingerprint perangkat
+hanya menjadi sinyal risiko, bukan pengganti autentikasi, dan MITRE menguraikan risiko capture/replay
+jika trafik dapat disadap: [OWASP Authentication Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html),
+[MITRE CWE-294](https://cwe.mitre.org/data/definitions/294.html). Hindari membuka port node ke internet.
 
 Akses jarak jauh (butuh kode gabung dari node lain; `?node=<id>` meneruskan ke komputer itu):
 `GET /screen?w=1280` (PNG layar), `POST /input {events:[…]}` (mouse/keyboard),
