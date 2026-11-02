@@ -28,6 +28,7 @@ MAX_REUSABLE_TTL = 30 * 24 * 3600  # 30 hari - lama tapi tetap ada batasnya
 MAX_ITEMS = 20
 # Paling banyak sekian tebakan salah per jendela waktu (detik).
 MAX_FAILS, FAIL_WINDOW = 30, 600
+MAX_FAILURE_CLIENTS = 1024
 
 
 class Invites:
@@ -35,11 +36,14 @@ class Invites:
         self._clock = clock
         self._lock = threading.Lock()
         self._items = {}  # kode -> (kedaluwarsa, env, reusable)
-        self._fails = []
+        self._fails = {}  # pemanggil -> waktu tebakan salah; jangan kunci semua orang bersama
 
     def _purge(self, now):
         self._items = {c: v for c, v in self._items.items() if v[0] > now}
-        self._fails = [t for t in self._fails if now - t < FAIL_WINDOW]
+        self._fails = {
+            caller: recent for caller, stamps in self._fails.items()
+            if (recent := [t for t in stamps if now - t < FAIL_WINDOW])
+        }
 
     def add(self, code, ttl, env, reusable=False):
         code = str(code or "").strip().upper()
@@ -61,21 +65,29 @@ class Invites:
                 self._items.pop(min(self._items, key=lambda c: self._items[c][0]))
             self._items[code] = (now + ttl, env, bool(reusable))
 
-    def redeem(self, code):
+    def redeem(self, code, caller="unknown"):
         """env undangan (kode sekali-pakai lalu hangus; kode reusable TETAP
         aktif untuk komputer berikutnya), atau None kalau salah/kedaluwarsa.
-        Melempar PermissionError kalau terlalu banyak tebakan salah."""
+        Batas tebakan berlaku per pemanggil, agar satu alamat tidak mengunci
+        pemilik/node lain. Melempar PermissionError kalau pemanggil ini terlalu
+        banyak tebakan salah."""
         code = str(code or "").strip().upper()
+        caller = str(caller or "unknown").strip()[:128] or "unknown"
         with self._lock:
             now = self._clock()
             self._purge(now)
-            if len(self._fails) >= MAX_FAILS:
+            fails = self._fails.get(caller, [])
+            if len(fails) >= MAX_FAILS:
                 raise PermissionError("terlalu banyak percobaan, coba lagi nanti")
             for known in list(self._items):
                 if hmac.compare_digest(known.encode(), code.encode()):
                     expiry, env, reusable = self._items[known]
                     if not reusable:
                         del self._items[known]
+                    self._fails.pop(caller, None)
                     return env
-            self._fails.append(now)
+            if caller not in self._fails and len(self._fails) >= MAX_FAILURE_CLIENTS:
+                oldest = min(self._fails, key=lambda c: self._fails[c][-1])
+                del self._fails[oldest]
+            self._fails.setdefault(caller, []).append(now)
             return None

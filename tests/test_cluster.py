@@ -65,7 +65,7 @@ class ClusterWolTest(unittest.TestCase):
 class GossipDiscoveryTest(unittest.TestCase):
     """Dua node dengan join_code SAMA tapi tanpa titik awal (seed) TIDAK PERNAH
     saling tahu alamat - gosip tidak punya cara menemukan siapa pun dari nol
-    (lihat server.py invite()/enroll() "seed" & install.ps1 langkah 5, juga
+    (lihat server.py invite() "seed" & install.ps1 langkah 5, juga
     catatan di memory itsme-architecture.md). Tes ini membuktikan perbaikannya
     sungguh bekerja: node baru yang diberi alamat node lain sebagai seed benar-
     benar saling menemukan lewat satu kali gossip_once() yang nyata lewat HTTP."""

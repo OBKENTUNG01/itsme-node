@@ -75,6 +75,8 @@ class Cluster:
         self.elect_start = time.time() + 2  # beri waktu gosip pertama
         self.started = time.time()
         self.working = False
+        # Layanan berpikir (thinker.py) komputer ini; dipasang oleh __main__ setelah node dibuat.
+        self.thinker = None
         # Bot It's Me di komputer ini siap menjadi bot Telegram aktif?
         self.bot = bot
         self.lead_since = 0.0
@@ -130,7 +132,8 @@ class Cluster:
                 "phase": self.phase, "fingerprint": self.cfg.get("_fingerprint"),
                 "mac": self.cfg.get("_mac"),
                 "lead_age": time.time() - self.lead_since if self.is_leader else None,
-                "version": VERSION, "started": self.started, "stats": self.store.stats()}
+                "version": VERSION, "started": self.started, "stats": self.store.stats(),
+                "think": self.thinker.health() if self.thinker is not None else None}
 
     def alive(self):
         """Semua node yang hidup, termasuk diri sendiri: id -> state."""
@@ -199,8 +202,8 @@ class Cluster:
                 self._fail.pop(s["addr"], None)
                 self._ever_heard = True
             if s.get("fingerprint"):
-                # Ingat sidik jari perangkat keras peer, supaya ia bisa gabung lagi
-                # otomatis kalau nanti OS-nya diinstal ulang (lihat server /enroll).
+                # Ingat fingerprint sebagai identitas inventaris peer; bukan kredensial
+                # autentikasi (nilai ini ikut terlihat pada gossip HTTP).
                 self.store.enroll_device(s["fingerprint"], s.get("name"))
             if s.get("mac") and s.get("name"):
                 # Peer ini langsung tergosip (jadi satu LAN dengan node ini) - ingat

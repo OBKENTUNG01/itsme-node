@@ -1,6 +1,6 @@
 """It's Me Node: jaringan komputer setara yang meriset internet saat menganggur."""
 
-VERSION = "0.7.1"
+VERSION = "0.8.0"
 # Versi protokol antar-node: 2 = permintaan ditandatangani (auth.py); node lama
 # (tanpa field "proto") hanya mengerti token Bearer.
 PROTO = 2

@@ -23,6 +23,7 @@ from .config import Config
 from .crawler import Crawler
 from .server import make_server
 from .store import Store
+from .thinker import Thinker
 
 DEFAULT_DATA = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"),
                             "ItsMeNode", "data")
@@ -81,7 +82,24 @@ def read_profile(cfg):
         return None, False
     # Model belum siap saat dites (mis. Ollama belum menyala): tes lagi sebentar lagi.
     max_age = 1800 if prof.get("retry") else 7 * 86400
-    return prof, prof.get("model_setting") == cfg["model"] and age < max_age
+    # Cara memilih/menguji model berubah (system.BENCH_VERSION): profil lama diuji ulang.
+    current = int(prof.get("bench_v") or 1) >= system.BENCH_VERSION
+    return prof, prof.get("model_setting") == cfg["model"] and age < max_age and current
+
+
+def merge_profile(old, new):
+    """Profil hasil tes ulang. Kalau Ollama belum siap saat dites ulang (retry, tanpa model) padahal profil lama
+    punya model yang sudah terbukti jalan, model lama dipertahankan - komputer ini sedang ikut berpikir untuk bot
+    dan tidak boleh berhenti hanya karena satu tes gagal; tesnya diulang sebentar lagi (retry tetap True)."""
+    if new.get("retry") and not new.get("model") and old.get("model"):
+        new.update({k: old[k] for k in ("model", "tps", "score") if k in old})
+    return new
+
+
+def should_unload(cfg, profile, working):
+    """Lepas model dari memori supaya komputer lega saat dipakai pemiliknya? TIDAK kalau komputer ini ikut berpikir
+    untuk bot (think aktif): modelnya harus tetap termuat (thinker.py)."""
+    return (not working) and bool(profile.get("model")) and not cfg.get("think", True)
 
 
 def refresh_profile(node, stop, first):
@@ -92,7 +110,7 @@ def refresh_profile(node, stop, first):
     if stop.is_set():
         return
     log("menguji kemampuan komputer ini ...")
-    prof = system.benchmark(node.cfg)
+    prof = merge_profile(dict(node.profile), system.benchmark(node.cfg))
     prof["model_setting"] = node.cfg["model"]
     with open(os.path.join(node.cfg.data_dir, "profile.json"), "w") as f:
         json.dump(prof, f, indent=2)
@@ -157,6 +175,10 @@ def run(args):
     cfg["_mac"] = system.mac_address()
     node.cluster = Cluster(cfg, node.profile, node.store, bot=itsme.ready(cfg))
     node.crawler = Crawler(cfg, node.profile, node.cluster, node.store)
+    # Berpikir untuk bot It's Me (otak lokal bersama): Ollama dijaga hidup dan model tetap termuat.
+    llm.configure(cfg.data_dir)
+    node.thinker = Thinker(cfg, node.profile, node.cluster)
+    node.cluster.thinker = node.crawler.thinker = node.thinker
     make_server(node)
     p = node.profile
     log(f"It's Me Node {VERSION} | {cfg['name']} @ {node.cluster.addr} | skor {p['score']} | "
@@ -166,6 +188,7 @@ def run(args):
     stop = threading.Event()
     threading.Thread(target=node.cluster.gossip_loop, args=(stop,), daemon=True).start()
     node.crawler.start(stop)
+    node.thinker.start(stop)
     if cfg.get("bridge_url") and cfg.get("bridge_token"):
         # Jembatan ke dashboard (tanpa Tailscale), lihat bridge.py.
         threading.Thread(target=bridge.run, args=(cfg, stop, node.store, node.cluster), daemon=True).start()
@@ -191,8 +214,7 @@ def run(args):
                 node.cluster.working = working
                 log("komputer menganggur, mulai riset" if working else
                     "komputer sedang dipakai, riset dijeda")
-                if not working and node.profile["model"]:
-                    # Lepas model dari memori supaya komputer lega untuk pemiliknya.
+                if should_unload(cfg, node.profile, working):
                     threading.Thread(target=llm.unload, daemon=True,
                                      args=(cfg["ollama_url"], node.profile["model"])).start()
             if now - last_bot > 60:

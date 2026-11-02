@@ -7,9 +7,9 @@ menjadi bot aktif, dan menyalin memori, otak yang dipilih, dan mode akses dari
 pemimpin ke sini, supaya bot tetap sama walau pindah komputer.
 
 Isi .env (token, kunci) hanya dibaca untuk memeriksa ada/tidaknya, KECUALI saat
-komputer yang sudah terdaftar menginstal ulang OS-nya dan minta gabung kembali
-(/enroll): node ini mengirim isi .env itu balik ke komputer tersebut lewat
-Tailscale supaya bot It's Me ikut pulih. Lihat env_bundle().
+komputer baru menukar undangan sekali-pakai (/invite): node mengirim pengaturan
+bot itu ke perangkat yang membawa kode sah. Gabung ulang berbasis fingerprint
+dinonaktifkan karena fingerprint bukan bukti rahasia. Lihat env_bundle().
 """
 
 import os
