@@ -193,6 +193,7 @@ class RemoteAccessIdleTest(unittest.TestCase):
             self.assertGreaterEqual(remote.remote_idle_seconds(), 400)
 
 
+@unittest.skipUnless(IS_WIN, "shutdown.exe hanya Windows")
 class PowerTest(unittest.TestCase):
     """power() hanya menjalankan shutdown.exe - jangan pernah memanggilnya sungguhan di tes."""
 
@@ -221,7 +222,9 @@ class PowerTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("nope", msg)
 
-    @unittest.skipIf(IS_WIN, "jalur non-Windows")
+
+@unittest.skipIf(IS_WIN, "jalur non-Windows")
+class PowerNonWindowsTest(unittest.TestCase):
     def test_non_windows_reports_unsupported(self):
         ok, msg = remote.power("shutdown")
         self.assertFalse(ok)
