@@ -11,6 +11,7 @@ dibaca/diunduh walau berkasnya tetap terlihat di daftar.
 import os
 import re
 import struct
+import subprocess
 import sys
 import threading
 import time
@@ -320,6 +321,31 @@ def inject(events):
     if not seq:
         return 0
     return _send(seq)
+
+
+# =============================== DAYA ========================================
+_POWER_FLAG = {"shutdown": "/s", "restart": "/r"}
+
+
+def power(action):
+    """Matikan atau nyalakan ulang komputer ini lewat shutdown.exe bawaan Windows.
+
+    Jeda 5 detik (bukan 0) supaya ada celah sempit untuk `shutdown /a` kalau ini
+    salah pencet - tidak bisa dibatalkan dari jarak jauh lewat tool ini sendiri.
+    Kembalikan (ok, pesan)."""
+    if not IS_WIN:
+        return False, "Matikan/nyalakan ulang jarak jauh baru didukung di Windows."
+    flag = _POWER_FLAG.get(action)
+    if not flag:
+        return False, f"Aksi tidak dikenal: {action!r} (pakai 'shutdown' atau 'restart')."
+    try:
+        subprocess.Popen(["shutdown", flag, "/t", "5"])
+    except OSError as exc:
+        return False, f"Gagal menjalankan shutdown.exe: {exc}"
+    return True, (
+        "Komputer akan mati dalam 5 detik." if action == "shutdown"
+        else "Komputer akan nyala ulang dalam 5 detik."
+    )
 
 
 # =============================== BERKAS ======================================

@@ -193,5 +193,39 @@ class RemoteAccessIdleTest(unittest.TestCase):
             self.assertGreaterEqual(remote.remote_idle_seconds(), 400)
 
 
+class PowerTest(unittest.TestCase):
+    """power() hanya menjalankan shutdown.exe - jangan pernah memanggilnya sungguhan di tes."""
+
+    def test_unknown_action_rejected(self):
+        with mock.patch.object(remote.subprocess, "Popen") as popen:
+            ok, msg = remote.power("hibernate")
+        self.assertFalse(ok)
+        self.assertIn("tidak dikenal", msg)
+        popen.assert_not_called()
+
+    def test_shutdown_calls_shutdown_exe_with_delay(self):
+        with mock.patch.object(remote.subprocess, "Popen") as popen:
+            ok, msg = remote.power("shutdown")
+        self.assertTrue(ok)
+        popen.assert_called_once_with(["shutdown", "/s", "/t", "5"])
+
+    def test_restart_calls_shutdown_exe_with_restart_flag(self):
+        with mock.patch.object(remote.subprocess, "Popen") as popen:
+            ok, msg = remote.power("restart")
+        self.assertTrue(ok)
+        popen.assert_called_once_with(["shutdown", "/r", "/t", "5"])
+
+    def test_popen_failure_reported_not_raised(self):
+        with mock.patch.object(remote.subprocess, "Popen", side_effect=OSError("nope")):
+            ok, msg = remote.power("shutdown")
+        self.assertFalse(ok)
+        self.assertIn("nope", msg)
+
+    @unittest.skipIf(IS_WIN, "jalur non-Windows")
+    def test_non_windows_reports_unsupported(self):
+        ok, msg = remote.power("shutdown")
+        self.assertFalse(ok)
+
+
 if __name__ == "__main__":
     unittest.main()

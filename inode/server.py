@@ -21,9 +21,9 @@ MAX_POST_BODY_BYTES = 16 * 1024 * 1024
 MAX_THINK_BODY_BYTES = MAX_POST_BODY_BYTES
 MAX_FS_WRITE_BODY_BYTES = 128 * 1024 * 1024  # cukup untuk berkas biner 100 MB (base64)
 MAX_ENROLL_BODY_BYTES = 64 * 1024  # drain hanya body lama yang kecil sebelum 410
-# Rute akses jarak jauh (layar, input, berkas). Boleh menyebut ?node=<id> untuk
+# Rute akses jarak jauh (layar, input, berkas, daya). Boleh menyebut ?node=<id> untuk
 # komputer lain; node ini meneruskannya ke sana lewat Tailscale.
-REMOTE_PATHS = {"/screen", "/input", "/fs/list", "/fs/read", "/fs/download", "/fs/write"}
+REMOTE_PATHS = {"/screen", "/input", "/fs/list", "/fs/read", "/fs/download", "/fs/write", "/power"}
 
 
 # Jaringan lokal: sepercaya Tailscale untuk gabung-ulang (satu rumah/kantor).
@@ -232,7 +232,7 @@ def make_server(node):
             if not addr:
                 return ("json", 404, {"error": "komputer tidak ditemukan atau sedang mati"})
             rest = {k: v for k, v in p.items() if k not in ("node", "t")}
-            if path in ("/input", "/fs/write"):
+            if path in ("/input", "/fs/write", "/power"):
                 res = cluster.rpc(addr, path, rest, timeout=25)
                 return ("json", 200 if res else 502, res or {"error": "komputer tujuan tak terjawab"})
             code, ctype, body, disp = _node_get(addr, path, rest)
@@ -265,6 +265,9 @@ def make_server(node):
                 return ("json", 400, {"error": "isi berkas rusak (base64)"})
             res = remote.fs_write(p.get("path", ""), data)
             return ("json", 200 if res.get("ok") else 400, res)
+        if path == "/power":
+            ok, message = remote.power(p.get("action", ""))
+            return ("json", 200 if ok else 400, {"ok": ok, "message": message})
         if path == "/fs/download":
             name, data = remote.fs_file(p.get("path", ""))
             quoted = urllib.parse.quote(name)
