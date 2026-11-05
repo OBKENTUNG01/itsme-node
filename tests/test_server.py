@@ -168,6 +168,31 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(c, 200)
         self.assertIn("sent", res)
 
+    def test_power_local(self):
+        # remote.power() DIPALSUKAN di sini sengaja - jangan sampai tes benar-benar mematikan mesin CI.
+        from inode import remote
+
+        with mock.patch.object(remote, "power", return_value=(True, "Komputer akan mati dalam 5 detik.")) as power:
+            c, res = self.post(PORTS["A"], "/power", {"action": "shutdown"})
+        self.assertEqual(c, 200)
+        self.assertTrue(res["ok"])
+        power.assert_called_once_with("shutdown")
+
+    def test_power_proxy_to_B(self):
+        from inode import remote
+
+        with mock.patch.object(remote, "power", return_value=(True, "Komputer akan nyala ulang dalam 5 detik.")) as power:
+            c, res = self.post(PORTS["A"], "/power", {"node": "B", "action": "restart"})
+        self.assertEqual(c, 200)
+        self.assertTrue(res["ok"])
+        power.assert_called_once_with("restart")  # dijalankan di proses B, bukan A
+
+    def test_power_unknown_action_local(self):
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            self.post(PORTS["A"], "/power", {"action": "hibernate"})
+        self.assertEqual(cm.exception.code, 400)
+        self.assertFalse(json.loads(cm.exception.read())["ok"])
+
     @unittest.skipUnless(IS_WIN, "layar hanya Windows")
     def test_screen_local_png(self):
         c, ct, b = self.get(PORTS["A"], "/screen?w=640")
