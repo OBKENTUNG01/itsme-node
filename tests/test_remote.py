@@ -157,6 +157,21 @@ class InputTest(unittest.TestCase):
         with mock.patch.object(remote, "_send", side_effect=AssertionError("tak boleh kirim")):
             self.assertEqual(remote.inject([]), 0)
 
+    def test_move_rel(self):
+        """Mode trackpad: gerak relatif (tanpa ABS), beda dari 'move' yang absolut."""
+        self.assertEqual(self.inject([{"t": "move_rel", "dx": 5, "dy": -3}]), [0])
+        # dx=dy=0 -> tidak ada yang dikirim (bukan gerak "ke (0,0)" seperti move absolut)
+        self.assertEqual(self.inject([{"t": "move_rel", "dx": 0, "dy": 0}]), [])
+        # input bukan angka diabaikan jadi 0, bukan error
+        self.assertEqual(self.inject([{"t": "move_rel", "dx": "oops", "dy": 4}]), [0])
+
+    def test_move_rel_clamps_extreme_values(self):
+        """Nilai ekstrem (klien nakal/rusak) dijepit, bukan dikirim mentah ke SendInput."""
+        seen = []
+        with mock.patch.object(remote, "_send", lambda seq: seen.extend(seq) or len(seq)):
+            remote.inject([{"t": "move_rel", "dx": 99999, "dy": -99999}])
+        self.assertEqual((seen[0].u.mi.dx, seen[0].u.mi.dy), (2000, -2000))
+
 
 class RemoteAccessIdleTest(unittest.TestCase):
     """'Dipakai' kini berarti sedang diakses lewat web, bukan ketikan lokal -
