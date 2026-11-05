@@ -253,11 +253,29 @@ def inject(events):
     def absxy(e):
         return int(float(e.get("x", 0)) * 65535), int(float(e.get("y", 0)) * 65535)
 
+    def reldxy(e):
+        """dx, dy relatif (unit mouse, bukan skala absolut 0..65535), dijepit supaya satu
+        kejadian aneh dari klien tidak bisa melempar kursor jauh di luar kendali."""
+        def clamp(v):
+            try:
+                v = int(float(v))
+            except (TypeError, ValueError):
+                return 0
+            return max(-2000, min(2000, v))
+        return clamp(e.get("dx", 0)), clamp(e.get("dy", 0))
+
     for e in events:
         t = e.get("t")
         if t == "move":
             x, y = absxy(e)
             mouse(MOVE | ABS, x, y)
+        elif t == "move_rel":
+            # Mode trackpad: gerak RELATIF terhadap posisi kursor sekarang (tanpa ABS),
+            # bukan lompat ke titik tertentu - dipakai viewer sentuh untuk presisi lebih
+            # baik di layar yang diperkecil/lag (lihat dashboard.py, mode "trackpad").
+            dx, dy = reldxy(e)
+            if dx or dy:
+                mouse(MOVE, dx, dy)
         elif t in ("click", "dblclick", "down", "up"):
             if "x" in e:
                 x, y = absxy(e)
