@@ -75,11 +75,36 @@ function Install-ItsMeNode {
     if (-not $py) { throw "Python gagal dipasang." }
     Say "Python: $py"
 
-    # 2. Ollama (model lokal) - dilewati kalau RAM < 6 GB
+    # 2. Ollama (model lokal) - WAJIB di setiap komputer yang bergabung, juga yang RAM-nya
+    #    kecil: modelnya saja yang tidak dimuat (komputer itu jadi penjelajah), tapi Ollama
+    #    sudah siap, dan dashboard (Pengaturan > Ollama) tidak menampilkannya "belum terpasang".
     $ram = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)
     $ollama = "$env:LOCALAPPDATA\Programs\Ollama\ollama.exe"
-    if ($ram -ge 6 -and -not (Test-Path $ollama) -and -not (Has ollama)) { Install-WingetPackage "Ollama.Ollama" }
-    if ($ram -lt 6) { Say "RAM $ram GB: komputer ini menjadi penjelajah tanpa model." }
+    function Test-OllamaInstalled { (Test-Path $ollama) -or (Has ollama) }
+    if (-not (Test-OllamaInstalled)) { Install-WingetPackage "Ollama.Ollama" }
+    if (-not (Test-OllamaInstalled)) {
+        Say "winget belum berhasil memasang Ollama - mencoba pemasang resmi dari ollama.com ..."
+        # Start-Process + WaitForExit, BUKAN pipa atau -Wait: pemasang Ollama menyalakan
+        # aplikasi tray yang terus berjalan, sehingga menunggu seluruh pohon prosesnya
+        # (atau pipa yang diwarisi tray) menggantung selamanya. Sama seperti jarvis/setup.ps1.
+        try {
+            $p = Start-Process powershell.exe -NoNewWindow -PassThru -ArgumentList @(
+                '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', '"irm https://ollama.com/install.ps1 | iex"')
+            $null = $p.Handle
+            # Tanpa batas, jaringan yang putus di tengah menahan pemasangan node selamanya di langkah ini.
+            if (-not $p.WaitForExit(1800000)) { Stop-Process -Id $p.Id -ErrorAction SilentlyContinue }
+        } catch { }
+        Refresh-Path
+    }
+    if (Test-OllamaInstalled) {
+        Say "Ollama terpasang."
+    } else {
+        # Tidak menggagalkan bergabung: komputer yang sudah bergabung bisa dipasangi Ollama
+        # dari dashboard, sedangkan yang gagal bergabung tidak bisa dijangkau sama sekali.
+        Write-Host "[!] Ollama GAGAL dipasang di komputer ini (koneksi/winget?). Komputer tetap bergabung;" -ForegroundColor Red
+        Write-Host "    pasang dari dashboard It's Me -> Pengaturan -> Ollama -> tombol 'Pasang' di baris komputer ini." -ForegroundColor Red
+    }
+    if ($ram -lt 6 -and (Test-OllamaInstalled)) { Say "RAM $ram GB: Ollama terpasang, tapi model terlalu besar untuk dimuat - komputer ini menjelajah tanpa model." }
 
     # 3. Copot Tailscale kalau ada - It's Me tidak memakainya lagi (pakai jembatan ke Hub).
     $tsExe = "$env:ProgramFiles\Tailscale\tailscale.exe"

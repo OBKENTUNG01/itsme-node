@@ -29,7 +29,7 @@ import time
 import urllib.error
 import urllib.request
 
-from . import PROTO, VERSION, auth, system
+from . import PROTO, VERSION, auth, ollama_ctl, system
 
 GOSSIP_EVERY = 2.0
 DEAD_AFTER = 10.0
@@ -133,7 +133,10 @@ class Cluster:
                 "mac": self.cfg.get("_mac"),
                 "lead_age": time.time() - self.lead_since if self.is_leader else None,
                 "version": VERSION, "started": self.started, "stats": self.store.stats(),
-                "think": self.thinker.health() if self.thinker is not None else None}
+                "think": self.thinker.health() if self.thinker is not None else None,
+                # Ollama terpasang?/versi/pekerjaan pasang-copot - dashboard menampilkannya
+                # per komputer (Pengaturan > Ollama). Murah: cache 10 detik, tanpa HTTP.
+                "ollama": ollama_ctl.summary()}
 
     def alive(self):
         """Semua node yang hidup, termasuk diri sendiri: id -> state."""

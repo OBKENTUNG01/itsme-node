@@ -158,19 +158,127 @@ class InputTest(unittest.TestCase):
             self.assertEqual(remote.inject([]), 0)
 
     def test_move_rel(self):
-        """Mode trackpad: gerak relatif (tanpa ABS), beda dari 'move' yang absolut."""
         self.assertEqual(self.inject([{"t": "move_rel", "dx": 5, "dy": -3}]), [0])
         # dx=dy=0 -> tidak ada yang dikirim (bukan gerak "ke (0,0)" seperti move absolut)
         self.assertEqual(self.inject([{"t": "move_rel", "dx": 0, "dy": 0}]), [])
         # input bukan angka diabaikan jadi 0, bukan error
         self.assertEqual(self.inject([{"t": "move_rel", "dx": "oops", "dy": 4}]), [0])
 
-    def test_move_rel_clamps_extreme_values(self):
-        """Nilai ekstrem (klien nakal/rusak) dijepit, bukan dikirim mentah ke SendInput."""
+    def _moves(self, events, start=(100, 200), size=(1920, 1080)):
+        """Piksel tujuan tiap gerak yang dikirim, dengan posisi awal & ukuran layar dipalsukan."""
+        seen = []
+        with mock.patch.object(remote, "_send", lambda seq: seen.extend(seq) or len(seq)), \
+             mock.patch.object(remote, "_cursor_pos", return_value=start), \
+             mock.patch.object(remote, "screen_size", return_value=size):
+            remote.inject(events)
+        sw, sh = size
+        out = []
+        for e in seen:
+            self.assertTrue(e.u.mi.dwFlags & 0x8000, "move_rel harus disuntik ABSOLUT (bebas akselerasi)")
+            out.append((e.u.mi.dx * sw // 65536, e.u.mi.dy * sh // 65536))  # cara Windows memetakan balik
+        return out
+
+    def test_move_rel_lands_exactly_relative_to_current_position(self):
+        """Relatif terhadap kursor sekarang, tapi tepat piksel - tidak ikut akselerasi Windows."""
+        self.assertEqual(self._moves([{"t": "move_rel", "dx": 5, "dy": -3}]), [(105, 197)])
+
+    def test_move_rel_steps_accumulate_within_one_batch(self):
+        evs = [{"t": "move_rel", "dx": 10, "dy": 0}, {"t": "move_rel", "dx": 10, "dy": 1}]
+        self.assertEqual(self._moves(evs), [(110, 200), (120, 201)])
+
+    def test_move_rel_clamps_extreme_values_and_screen_edges(self):
+        """Nilai ekstrem (klien nakal/rusak) dijepit +-2000 lalu ke tepi layar."""
+        self.assertEqual(self._moves([{"t": "move_rel", "dx": 99999, "dy": -99999}]), [(1919, 0)])
+
+    def test_move_lands_exactly_on_the_pixel_the_client_means(self):
+        """x,y klien = piksel / (lebar-1), persis nx/ny di cursor_info - mendarat tepat piksel itu."""
+        for px, py in ((0, 0), (1, 1), (959, 539), (960, 540), (1500, 700), (1919, 1079)):
+            nx, ny = round(px / 1919, 5), round(py / 1079, 5)  # seperti dibulatkan cursor_info
+            self.assertEqual(self._moves([{"t": "move", "x": nx, "y": ny}]), [(px, py)])
+
+    def test_move_clamps_out_of_range_and_garbage(self):
+        self.assertEqual(self._moves([{"t": "move", "x": 7, "y": -3}]), [(1919, 0)])
+        self.assertEqual(self._moves([{"t": "move", "x": "oops", "y": None}]), [(0, 0)])
+
+    def test_click_with_position_moves_to_the_same_exact_pixel(self):
+        seen = []
+        with mock.patch.object(remote, "_send", lambda seq: seen.extend(seq) or len(seq)), \
+             mock.patch.object(remote, "screen_size", return_value=(1920, 1080)):
+            remote.inject([{"t": "click", "x": round(1500 / 1919, 5), "y": round(700 / 1079, 5)}])
+        first = seen[0].u.mi
+        self.assertTrue(first.dwFlags & 0x8000)
+        self.assertEqual((first.dx * 1920 // 65536, first.dy * 1080 // 65536), (1500, 700))
+
+    def test_scroll_vertical_horizontal_and_smooth_values(self):
         seen = []
         with mock.patch.object(remote, "_send", lambda seq: seen.extend(seq) or len(seq)):
-            remote.inject([{"t": "move_rel", "dx": 99999, "dy": -99999}])
-        self.assertEqual((seen[0].u.mi.dx, seen[0].u.mi.dy), (2000, -2000))
+            remote.inject([{"t": "scroll", "dy": -45, "dx": 120}])
+        got = [(e.u.mi.dwFlags, e.u.mi.mouseData) for e in seen]
+        # roda vertikal (0x0800) lalu horizontal (0x1000); negatif = dua-komplemen 32-bit
+        self.assertEqual(got, [(0x0800, (-45) & 0xFFFFFFFF), (0x1000, 120)])
+
+    def test_scroll_without_amount_sends_nothing_and_clamps_extremes(self):
+        self.assertEqual(self.inject([{"t": "scroll"}]), [])
+        self.assertEqual(self.inject([{"t": "scroll", "dy": "oops", "dx": None}]), [])
+        seen = []
+        with mock.patch.object(remote, "_send", lambda seq: seen.extend(seq) or len(seq)):
+            remote.inject([{"t": "scroll", "dy": 10**9}])
+        self.assertEqual(seen[0].u.mi.mouseData, 2400)
+
+    def test_nan_infinity_and_garbage_do_not_break_the_batch(self):
+        """json.loads Python menerima NaN dan 1e999: satu isian aneh tidak boleh menggagalkan klik di sebelahnya."""
+        inf, nan = float("inf"), float("nan")
+        got = self.inject([{"t": "move", "x": nan, "y": inf}, {"t": "scroll", "dy": inf, "dx": nan},
+                           {"t": "move_rel", "dx": inf, "dy": -inf}, {"t": "click"}])
+        self.assertEqual(got, [0, 0, 0])   # move (ke 0,0) + klik (tekan, lepas); scroll & move_rel NaN/inf diabaikan
+
+    def test_cursor_on_another_monitor_is_reported_not_visible(self):
+        """Gambar layar hanya layar utama: kursor di monitor lain tak boleh digambar menempel di tepi."""
+        import ctypes
+
+        class POINT(ctypes.Structure):
+            _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+        class CURSORINFO(ctypes.Structure):
+            _fields_ = [("cbSize", ctypes.c_uint32), ("flags", ctypes.c_uint32), ("hCursor", ctypes.c_void_p),
+                        ("ptScreenPos", POINT)]
+
+        def api(x, y):
+            class U:
+                def GetCursorInfo(self, ref):
+                    ref._obj.flags, ref._obj.ptScreenPos.x, ref._obj.ptScreenPos.y = 1, x, y
+                    return 1
+
+                def GetSystemMetrics(self, i):
+                    return 1920 if i == 0 else 1080
+            return (ctypes, None, U(), CURSORINFO, {})
+
+        for x, y, visible in ((100, 100, True), (1919, 1079, True), (2500, 100, False), (-300, 50, False)):
+            with mock.patch.object(remote, "IS_WIN", True), mock.patch.object(remote, "_cursor_api", return_value=api(x, y)):
+                info = remote.cursor_info()
+            self.assertEqual((info["x"], info["y"], info["visible"]), (x, y, visible), (x, y))
+            self.assertTrue(0.0 <= info["nx"] <= 1.0 and 0.0 <= info["ny"] <= 1.0)
+
+    def test_cursor_info_reports_position_and_kind(self):
+        info = remote.cursor_info()
+        if info is None:
+            self.skipTest("tidak ada sesi layar")
+        for key in ("x", "y", "w", "h", "nx", "ny", "visible", "kind"):
+            self.assertIn(key, info)
+        self.assertTrue(0.0 <= info["nx"] <= 1.0 and 0.0 <= info["ny"] <= 1.0)
+        self.assertIsInstance(info["kind"], str)
+
+
+class AbsNormTest(unittest.TestCase):
+    """Rumus piksel -> koordinat SendInput harus mendarat TEPAT di piksel yang diminta
+    (Windows memetakan balik dengan floor(n * lebar / 65536)) - juga sudah diuji nyata."""
+
+    def test_round_trip_is_exact_for_common_screens(self):
+        for sw, sh in ((1920, 1080), (1366, 768), (2560, 1440), (3840, 2160), (1280, 1024)):
+            for x in (0, 1, 2, sw // 3, sw // 2 + 1, sw - 2, sw - 1):
+                nx, _ = remote._abs_norm(x, 0, sw, sh)
+                self.assertLessEqual(nx, 65535)
+                self.assertEqual(nx * sw // 65536, x, (sw, x))
 
 
 class RemoteAccessIdleTest(unittest.TestCase):

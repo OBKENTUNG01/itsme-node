@@ -187,6 +187,132 @@ class ServerTest(unittest.TestCase):
         self.assertTrue(res["ok"])
         power.assert_called_once_with("restart")  # dijalankan di proses B, bukan A
 
+    def test_cursor_route_local_and_proxied(self):
+        from inode import remote
+
+        fake = {"x": 10, "y": 20, "w": 1920, "h": 1080, "nx": 0.0052, "ny": 0.0185, "visible": True, "kind": "text"}
+        with mock.patch.object(remote, "cursor_info", return_value=fake):
+            for q in ("/cursor", "/cursor?node=B"):
+                c, ct, b = self.get(PORTS["A"], q)
+                self.assertEqual(c, 200)
+                self.assertEqual(json.loads(b)["kind"], "text")
+
+    def test_input_reply_carries_cursor_position(self):
+        """Dashboard menggambar kursornya sendiri: /input harus mengembalikan posisi sesudahnya."""
+        from inode import remote
+
+        with mock.patch.object(remote, "inject", return_value=1), \
+             mock.patch.object(remote, "cursor_info", return_value={"nx": 0.5, "ny": 0.25}):
+            c, res = self.post(PORTS["A"], "/input", {"node": "B", "events": [{"t": "move", "x": 0.5, "y": 0.25}]})
+        self.assertEqual(c, 200)
+        self.assertEqual(res["cursor"], {"nx": 0.5, "ny": 0.25})
+
+    def test_ollama_status_and_install_forwarded_to_B(self):
+        from inode import ollama_ctl
+
+        with mock.patch.object(ollama_ctl, "status", return_value={"installed": False, "job": None}) as st:
+            c, res = self.post(PORTS["A"], "/ollama", {"node": "B", "action": "status"})
+        self.assertEqual((c, res["installed"]), (200, False))
+        st.assert_called_once()
+        with mock.patch.object(ollama_ctl, "start", return_value={"ok": True, "job": {"action": "install"}}) as start:
+            c, res = self.post(PORTS["A"], "/ollama", {"node": "B", "action": "install"})
+        self.assertTrue(res["ok"])
+        start.assert_called_once_with("install")  # dijalankan di proses B
+
+    # --- keamanan: halaman web di browser pemilik tidak boleh menyuruh node ------------------
+    def raw_request(self, method, path, headers=None, body=None, port=None):
+        import http.client
+
+        conn = http.client.HTTPConnection("127.0.0.1", port or PORTS["A"], timeout=30)
+        try:
+            conn.putrequest(method, path, skip_host=True, skip_accept_encoding=True)
+            hdrs = {"Host": f"127.0.0.1:{port or PORTS['A']}"}
+            hdrs.update(headers or {})
+            data = json.dumps(body).encode() if body is not None else None
+            if data is not None:
+                hdrs["Content-Type"] = "application/json"
+                hdrs["Content-Length"] = str(len(data))
+            for k, v in hdrs.items():
+                conn.putheader(k, v)
+            conn.endheaders(data)
+            resp = conn.getresponse()
+            return resp.status, resp.read()
+        finally:
+            conn.close()
+
+    def test_get_cannot_trigger_mutating_routes(self):
+        """<img src="http://127.0.0.1:7171/power?action=shutdown"> dari situs mana pun tak boleh berefek."""
+        from inode import ollama_ctl, remote
+
+        with mock.patch.object(remote, "power") as power, mock.patch.object(remote, "inject") as inject, \
+             mock.patch.object(remote, "fs_write") as fs_write, \
+             mock.patch.object(ollama_ctl, "start") as start, \
+             mock.patch.object(ollama_ctl, "status", return_value={"installed": True, "job": None}):
+            for path in ("/power?action=shutdown", "/input?events=x", "/fs/write?path=x&b64=eA=="):
+                code, _ = self.raw_request("GET", path)
+                self.assertEqual(code, 405, path)
+            code, body = self.raw_request("GET", "/ollama?action=uninstall")
+            self.assertEqual(code, 200)                       # GET /ollama = status saja
+            self.assertTrue(json.loads(body)["installed"])
+        power.assert_not_called()
+        inject.assert_not_called()
+        fs_write.assert_not_called()
+        start.assert_not_called()
+
+    def test_other_state_changing_routes_are_post_only_too(self):
+        for path in ("/invite-new?code=ABCDEFGHIJKL&ttl=600", "/wake?name=x", "/enrolled-merge?devices=x",
+                     "/doc?url=x", "/links?rows=x"):
+            code, _ = self.raw_request("GET", path)
+            self.assertEqual(code, 405, path)
+
+    def test_cross_site_requests_to_loopback_are_refused(self):
+        from inode import remote
+
+        with mock.patch.object(remote, "power", return_value=(True, "ok")) as power:
+            body = {"action": "shutdown"}
+            for hdrs in ({"Origin": "http://evil.example"}, {"Origin": "null"},
+                         {"Sec-Fetch-Site": "cross-site"}, {"Sec-Fetch-Site": "same-site"},
+                         {"Host": "evil.example:80"}, {"Host": "evil.example"}, {"Host": ""}):
+                code, _ = self.raw_request("POST", "/power", hdrs, body)
+                self.assertEqual(code, 403, hdrs)
+            power.assert_not_called()
+            # halaman node sendiri (asal-sama) dan pemanggil lokal biasa tetap boleh
+            for hdrs in ({}, {"Origin": f"http://127.0.0.1:{PORTS['A']}"}, {"Sec-Fetch-Site": "same-origin"},
+                         {"Sec-Fetch-Site": "none"}, {"Host": f"localhost:{PORTS['A']}"}):
+                code, _ = self.raw_request("POST", "/power", hdrs, body)
+                self.assertEqual(code, 200, hdrs)
+            self.assertEqual(power.call_count, 5)
+
+    def test_local_request_safe_helper(self):
+        from inode.server import local_request_safe
+
+        self.assertTrue(local_request_safe({"Host": "127.0.0.1:7171"}))
+        self.assertTrue(local_request_safe({"Host": "[::1]:7171", "Origin": "http://[::1]:7171"}))
+        self.assertFalse(local_request_safe({}))
+        self.assertFalse(local_request_safe({"Host": "192.168.1.3:7171"}))
+        self.assertFalse(local_request_safe({"Host": "127.0.0.1:7171", "Origin": "https://evil.example"}))
+
+    def test_ollama_busy_reported_as_conflict(self):
+        from inode import ollama_ctl
+
+        with mock.patch.object(ollama_ctl, "start", return_value={"ok": False, "error": "masih ada pekerjaan"}):
+            with self.assertRaises(urllib.error.HTTPError) as cm:
+                self.post(PORTS["A"], "/ollama", {"action": "uninstall"})
+        self.assertEqual(cm.exception.code, 409)
+
+    def test_status_lists_ollama_per_computer(self):
+        cl = self.nodeA.cluster
+        cl.addr = "127.0.0.1:%d" % PORTS["A"]
+        self.addCleanup(delattr, cl, "addr")
+        state = cl.alive()
+        state["B"]["ollama"] = {"installed": False, "version": None, "job": None}
+        with mock.patch.object(cl, "alive", return_value=state), \
+             mock.patch.object(self.nodeA.store, "seen_list", create=True, return_value=[]):
+            c, ct, b = self.get(PORTS["A"], "/status")
+        by_id = {n["id"]: n for n in json.loads(b)["nodes"]}
+        self.assertEqual(by_id["B"]["ollama"]["installed"], False)
+        self.assertIn("ollama", by_id["A"])
+
     def test_power_unknown_action_local(self):
         with self.assertRaises(urllib.error.HTTPError) as cm:
             self.post(PORTS["A"], "/power", {"action": "hibernate"})
