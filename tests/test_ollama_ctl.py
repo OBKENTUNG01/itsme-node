@@ -194,6 +194,7 @@ class UninstallTest(_WinBase):
     def test_not_installed_is_a_noop(self):
         with mock.patch.object(ollama_ctl, "_registry", return_value=None), \
              mock.patch.object(ollama_ctl.os.path, "isfile", return_value=False), \
+             mock.patch.object(ollama_ctl, "status", return_value={"unmanaged": False}), \
              mock.patch.object(ollama_ctl.subprocess, "Popen") as popen:
             ok, msg = ollama_ctl._uninstall()
         self.assertTrue(ok)
@@ -267,7 +268,8 @@ class SummaryTest(_WinBase):
 
 class UnmanagedAndEdgeCasesTest(_WinBase):
     """Temuan review: Ollama di luar pemasang resmi, winget tak bisa dijalankan, nama proses."""
-    DEFAULT = r"C:\Users\x\AppData\Local\Programs\Ollama"
+    DEFAULT = os.path.join(tempfile.gettempdir(), "Programs", "Ollama")
+    SCOOP = os.path.join(tempfile.gettempdir(), "scoop", "shims", "ollama.exe")
 
     def status_with(self, exe, reg=None):
         with mock.patch.object(ollama_ctl, "_registry", return_value=reg), \
@@ -277,20 +279,20 @@ class UnmanagedAndEdgeCasesTest(_WinBase):
             return ollama_ctl.status()
 
     def test_scoop_or_zip_ollama_counts_as_installed_but_unmanaged(self):
-        st = self.status_with(r"C:\scoop\shims\ollama.exe")
+        st = self.status_with(self.SCOOP)
         self.assertEqual((st["installed"], st["unmanaged"], st["leftover"]), (True, True, False))
 
     def test_leftover_files_in_the_default_folder_are_not_installed(self):
-        st = self.status_with(self.DEFAULT + r"\ollama.exe")
+        st = self.status_with(os.path.join(self.DEFAULT, "ollama.exe"))
         self.assertEqual((st["installed"], st["unmanaged"], st["leftover"]), (False, False, True))
 
     def test_official_install_is_installed_and_managed(self):
-        reg = {"version": "0.40.15", "path": self.DEFAULT, "uninstall": self.DEFAULT + r"\unins000.exe"}
-        st = self.status_with(self.DEFAULT + r"\ollama.exe", reg)
+        reg = {"version": "0.40.15", "path": self.DEFAULT, "uninstall": os.path.join(self.DEFAULT, "unins000.exe")}
+        st = self.status_with(os.path.join(self.DEFAULT, "ollama.exe"), reg)
         self.assertEqual((st["installed"], st["unmanaged"], st["leftover"], st["version"]), (True, False, False, "0.40.15"))
 
     def test_gossip_summary_uses_the_same_rule(self):
-        for exe, want in ((r"C:\scoop\shims\ollama.exe", True), (self.DEFAULT + r"\ollama.exe", False), (None, False)):
+        for exe, want in ((self.SCOOP, True), (os.path.join(self.DEFAULT, "ollama.exe"), False), (None, False)):
             ollama_ctl._invalidate()
             with mock.patch.object(ollama_ctl, "_registry", return_value=None), \
                  mock.patch.object(ollama_ctl, "_exe", return_value=exe), \
@@ -298,7 +300,7 @@ class UnmanagedAndEdgeCasesTest(_WinBase):
                 self.assertEqual(ollama_ctl.summary()["installed"], want, exe)
 
     def test_install_never_touches_an_ollama_that_lives_elsewhere(self):
-        st = {"installed": True, "unmanaged": True, "path": r"C:\scoop\shims\ollama.exe", "version": None}
+        st = {"installed": True, "unmanaged": True, "path": self.SCOOP, "version": None}
         with mock.patch.object(ollama_ctl, "status", return_value=st), \
              mock.patch.object(ollama_ctl, "_wait_file_process") as run, \
              mock.patch.object(ollama_ctl, "_kill") as kill:
@@ -311,7 +313,7 @@ class UnmanagedAndEdgeCasesTest(_WinBase):
     def test_uninstall_explains_when_ollama_is_not_ours_to_remove(self):
         with mock.patch.object(ollama_ctl, "_registry", return_value=None), \
              mock.patch.object(ollama_ctl.os.path, "isfile", return_value=False), \
-             mock.patch.object(ollama_ctl, "status", return_value={"unmanaged": True, "path": r"C:\scoop\shims\ollama.exe"}), \
+             mock.patch.object(ollama_ctl, "status", return_value={"unmanaged": True, "path": self.SCOOP}), \
              mock.patch.object(ollama_ctl.subprocess, "Popen") as popen:
             ok, msg = ollama_ctl._uninstall()
         self.assertFalse(ok)
