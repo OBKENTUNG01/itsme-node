@@ -258,6 +258,20 @@ class SupervisorTest(_Base):
             t.tick(1000.0 + 15.0 + 31.0)
             self.assertEqual(start.call_count, 3)
 
+    def test_tidak_menyalakan_ollama_saat_dipasang_atau_dicopot(self):
+        """Selama ollama_ctl memasang/mencopot, menyalakan Ollama membuat berkas terkunci."""
+        t = self.make(url=dead_url())
+        system.OLLAMA_MAINTENANCE.set()
+        self.addCleanup(system.OLLAMA_MAINTENANCE.clear)
+        with _ollama_down(), mock.patch.object(system, "start_ollama", return_value=True) as start:
+            t.tick(1000.0)
+            t.tick(2000.0)
+            start.assert_not_called()
+            self.assertEqual(t.restarts, 0)  # bukan kegagalan, jadi tidak menambah jeda
+            system.OLLAMA_MAINTENANCE.clear()
+            t.tick(2005.0)
+            start.assert_called_once_with(low_priority=True)
+
     def test_jeda_penyalaan_dibatasi(self):
         t = self.make(url=dead_url())
         with _ollama_down(), mock.patch.object(system, "start_ollama", return_value=False):

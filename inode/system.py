@@ -10,6 +10,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 import uuid
 
@@ -204,6 +205,9 @@ BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
 PROCESS_SET_INFORMATION = 0x0200
 # Proses milik Ollama yang menjalankan model; semuanya diturunkan prioritasnya.
 OLLAMA_PROCS = {"ollama.exe", "ollama_llama_server.exe", "llama-server.exe", "ollama-runner.exe"}
+# Dipasang selama ollama_ctl memasang/mencopot Ollama: jangan nyalakan Ollama di tengah
+# jalan (menyalakannya saat uninstall membuat berkas terkunci dan gagal terhapus).
+OLLAMA_MAINTENANCE = threading.Event()
 
 
 def start_ollama(low_priority=True):
@@ -211,6 +215,8 @@ def start_ollama(low_priority=True):
 
     low_priority: berjalan di bawah prioritas normal (Windows), supaya komputer yang sedang
     dipakai pemiliknya tidak tersendat; proses model yang dibuatnya mewarisi prioritas itu."""
+    if OLLAMA_MAINTENANCE.is_set():
+        return False
     exe = shutil.which("ollama")
     if not exe and IS_WIN:
         p = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Ollama", "ollama.exe")

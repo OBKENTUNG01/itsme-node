@@ -32,6 +32,11 @@ irm https://raw.githubusercontent.com/OBKENTUNG01/itsme-node/main/install.ps1 | 
    kunci otak), lalu menyambung **keluar** ke Hub. Node **dan** It's Me terpasang sekaligus; memori,
    otak, dan mode akses ikut disalin oleh node. Tailscale yang masih terpasang ikut dicopot.
 
+- **Ollama wajib.** Pemasang ikut memasang Ollama di tiap komputer yang bergabung (winget, lalu
+  pemasang resmi ollama.com sebagai cadangan) — tanpa syarat RAM; komputer lemah tetap punya
+  Ollama dan node-nya sendiri yang memutuskan model mana yang dipakai. Kalau pemasangan Ollama
+  gagal (mis. tak ada internet), komputer tetap bergabung dan tampil **belum terpasang** di
+  dashboard → **Pengaturan → Ollama per komputer → Pasang** (lihat "Ollama per komputer" di bawah).
 - Kode undangan hanya berlaku sekali dan hangus dalam 30 menit. Tebakan salah dibatasi.
 - Mau satu tautan yang sama dipakai untuk BEBERAPA komputer (tidak hangus setelah
   dipakai sekali)? Kirim **`/pasang_tetap`** (bukan `/pasang`) — berlaku sampai 30 hari,
@@ -193,6 +198,18 @@ http://localhost:7171/
 - **Layar** — pilih komputer di atas, lihat layarnya diperbarui berkala, dan centang
   **Kendalikan** untuk memakai mouse & keyboard-nya seperti remote desktop. Hanya layar
   utama; ini gambar berkala jadi ada sedikit jeda.
+  - **Kursor terlihat.** Tangkapan layar Windows (GDI) memang tidak pernah memuat kursor mouse,
+    jadi dashboard menggambar kursor komputer tujuan sendiri di atas gambar (seperti Chrome
+    Remote Desktop: kursor bukan bagian video). Posisi, terlihat/tidaknya, dan **bentuknya**
+    (panah, I-beam, tangan, ubah-ukuran, tunggu, dst.) dibaca dari `GET /cursor`.
+  - **Mode trackpad** (HP): 1 jari geser = kursor bergerak relatif, ketuk = klik, ketuk 2 jari =
+    klik kanan, ketuk 3 jari = klik tengah, tahan lalu geser = seret (lingkaran abu-abu), 2 jari
+    geser = gulir (vertikal & horizontal; "Gulir alami" bisa dimatikan), cubit = zoom (tampilan
+    mengikuti kursor), 3 jari geser = geser tampilan. Posisi kursor dipegang klien dan dikirim
+    ABSOLUT (`move` x,y 0..1), jadi tidak terpengaruh kecepatan/akselerasi pointer Windows;
+    saat tidak dipakai kursor mengikuti posisi asli komputer tujuan lagi. Di komputer (mouse),
+    trackpad memakai Pointer Lock; tanpa trackpad kursor lokalmu berubah bentuk mengikuti
+    kursor komputer tujuan.
 - **Berkas** — telusuri folder komputer itu, lihat isi berkas teks, unduh, dan **unggah**
   (kirim berkas dari komputer tempat dashboard dibuka ke komputer yang dipilih, sampai
   100 MB). Berkas rahasia (`.env`, kunci, token, login browser/aplikasi, `.ssh`, `.claude`)
@@ -205,6 +222,29 @@ Halaman ini hanya bisa dibuka **dari komputer itu sendiri** (127.0.0.1). Kompute
 kamu lihat menyajikan layar/berkasnya; komputer tempat kamu duduk meneruskan permintaan
 ke sana lewat jaringan LAN dengan kode gabung bersama, atau — untuk komputer di jaringan
 berbeda — lewat jembatan dashboard It's Me, jadi tetap bisa diakses tanpa VPN.
+
+## Ollama per komputer (pasang / copot dari dashboard)
+
+Dashboard → **Pengaturan → Ollama per komputer** menampilkan semua komputer yang terhubung dan
+mana yang **sudah** / **belum** punya Ollama (status ikut gosip antar-node, ±10 detik), dengan
+tombol **Pasang** / **Copot** per komputer dan **Pasang di semua yang belum terpasang**. Pemilik
+tetap diminta konfirmasi lewat Telegram sebelum jalan.
+
+- **Pasang** — winget (`Ollama.Ollama`, per-pengguna, tanpa admin; kode `0x8A15002B`/`0x8A150061`
+  = sudah terpasang), lalu pemasang resmi ollama.com sebagai cadangan. Unduhan ±1,7 GB jadi ini
+  PEKERJAAN LATAR di komputer tujuan; kemajuannya tampil di daftar. Aplikasi tray dimatikan dan
+  dicegah menyala sendiri (node yang menjalankan `ollama serve` tersembunyi).
+- **Copot** — uninstaller resmi (`/VERYSILENT`). **Model di `~/.ollama` tetap tersimpan**, jadi
+  pasang ulang tidak mengunduh model lagi. Dua jebakan nyata ditangani: `unins000.exe` menyalin
+  dirinya ke TEMP lalu langsung keluar (hasil dipantau sampai registry & berkas benar-benar
+  hilang, bukan dari kode keluar), dan proses Ollama yang menyala lagi di tengah pekerjaan
+  mengunci berkas (dimatikan terus selama pekerjaan; `OLLAMA_MAINTENANCE` mencegah penjaga
+  `thinker.py` menyalakannya lagi).
+- Sisa uninstall yang tak tuntas (berkas ada, registry hilang) tampil `leftover` dan dihitung
+  **belum terpasang** — tombol Pasang memperbaikinya.
+- API: `GET /ollama?node=<id>` (status + pekerjaan berjalan), `POST /ollama {"node","action":"install"|"uninstall"}`
+  (200 `{ok, job}`, atau 409 bila masih ada pekerjaan). Field `ollama` ikut di `/status` tiap node.
+- Hanya Windows; di macOS/Linux dashboard melaporkan itu apa adanya.
 
 ## Menyalakan komputer yang mati (Wake-on-LAN)
 
@@ -262,7 +302,10 @@ jika trafik dapat disadap: [OWASP Authentication Cheat Sheet](https://cheatsheet
 [MITRE CWE-294](https://cwe.mitre.org/data/definitions/294.html). Hindari membuka port node ke internet.
 
 Akses jarak jauh (butuh kode gabung dari node lain; `?node=<id>` meneruskan ke komputer itu):
-`GET /screen?w=1280` (PNG layar), `POST /input {events:[…]}` (mouse/keyboard),
+`GET /screen?w=1280` (PNG layar), `GET /cursor` (posisi/bentuk kursor), `POST /input {events:[…]}`
+(mouse/keyboard; balasannya memuat `cursor`; kejadian: `move` x,y 0..1 = piksel/(lebar-1) mendarat
+tepat di piksel itu, `move_rel` dx,dy, `down`/`up`/`click`/`dblclick`, `scroll` dy/dx, `text`, `key`),
+`POST /power {"action":"shutdown"|"restart"}`, `GET/POST /ollama` (lihat "Ollama per komputer"),
 `GET /fs/list?path=…`, `GET /fs/read?path=…`, `GET /fs/download?path=…`,
 `POST /fs/write {"path","b64"}` (tulis/unggah berkas, maks 100 MB, base64 di `b64`;
 dipakai tombol unggah di dashboard tab 🖥️ Komputer).

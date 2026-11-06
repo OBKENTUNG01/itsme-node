@@ -217,6 +217,8 @@ class Thinker:
         self.up = llm.available(self.url)
         if not self.up:
             self.loaded = False
+            if system.OLLAMA_MAINTENANCE.is_set():
+                return  # sedang dipasang/dicopot dari dashboard (ollama_ctl): jangan diganggu
             if now >= self._next_restart:
                 self._fails += 1
                 self.restarts += 1

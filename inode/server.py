@@ -10,7 +10,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
-from . import auth, itsme, llm, remote, viewer, wol
+from . import auth, itsme, llm, ollama_ctl, remote, viewer, wol
 from .invites import Invites
 from .cluster import log
 
@@ -21,9 +21,14 @@ MAX_POST_BODY_BYTES = 16 * 1024 * 1024
 MAX_THINK_BODY_BYTES = MAX_POST_BODY_BYTES
 MAX_FS_WRITE_BODY_BYTES = 128 * 1024 * 1024  # cukup untuk berkas biner 100 MB (base64)
 MAX_ENROLL_BODY_BYTES = 64 * 1024  # drain hanya body lama yang kecil sebelum 410
-# Rute akses jarak jauh (layar, input, berkas, daya). Boleh menyebut ?node=<id> untuk
-# komputer lain; node ini meneruskannya ke sana lewat Tailscale.
-REMOTE_PATHS = {"/screen", "/input", "/fs/list", "/fs/read", "/fs/download", "/fs/write", "/power"}
+# Rute akses jarak jauh (layar, kursor, input, berkas, daya, Ollama). Boleh menyebut
+# ?node=<id> untuk komputer lain; node ini meneruskannya ke sana.
+REMOTE_PATHS = {"/screen", "/cursor", "/input", "/fs/list", "/fs/read", "/fs/download", "/fs/write",
+                "/power", "/ollama"}
+# Rute yang mengubah sesuatu: diteruskan sebagai POST bertanda tangan (cluster.rpc).
+REMOTE_POST_PATHS = ("/input", "/fs/write", "/power", "/ollama")
+# Rute lain yang mengubah keadaan node: juga tidak boleh lewat GET (lihat do_GET).
+_MUTATING_ROUTES = ("/invite-new", "/wake", "/enrolled-merge", "/doc", "/links")
 
 
 # Jaringan lokal: sepercaya Tailscale untuk gabung-ulang (satu rumah/kantor).
@@ -39,6 +44,33 @@ def client_ip(peer, headers):
         if fwd:
             return fwd
     return peer
+
+
+_LOOPBACK_NAMES = {"127.0.0.1", "localhost", "[::1]"}
+
+
+def _host_only(netloc):
+    """'127.0.0.1:7171' -> '127.0.0.1'; '[::1]:7171' -> '[::1]'; 'LocalHost' -> 'localhost'."""
+    h = (netloc or "").strip().lower()
+    if h.startswith("["):
+        return h.split("]", 1)[0] + "]"
+    return h.split(":", 1)[0]
+
+
+def local_request_safe(headers):
+    """Permintaan dari proses LOKAL selalu dipercaya check_auth - termasuk dari halaman web mana pun
+    yang terbuka di browser pemilik. Jadi tolak yang jelas berasal dari browser lintas-situs:
+    (1) Host bukan nama loopback (DNS-rebinding: domain penyerang diarahkan ke 127.0.0.1);
+    (2) Origin ada tapi bukan asal-sama (POST lintas-situs; 'null' = konteks buram ikut ditolak);
+    (3) Sec-Fetch-Site lintas-situs. Pemanggil lokal biasa (dashboard Python, CLI, tes) tidak
+    mengirim Origin/Sec-Fetch-*, jadi tidak terpengaruh; halaman node sendiri (asal-sama) tetap jalan."""
+    host = (headers.get("Host") or "").strip().lower()
+    if _host_only(host) not in _LOOPBACK_NAMES:
+        return False
+    origin = (headers.get("Origin") or "").strip().lower()
+    if origin and urlsplit(origin).netloc != host:
+        return False
+    return (headers.get("Sec-Fetch-Site") or "").strip().lower() in ("", "same-origin", "none")
 
 
 def check_auth(cfg, verifier, peer, method, target, raw, headers):
@@ -98,6 +130,8 @@ def make_server(node):
                                   # Kesiapan berpikir tiap komputer (model, kecepatan, antrean): dibaca
                                   # bot untuk membagi pekerjaan ke semua komputer (thinker.py).
                                   "think": s.get("think"),
+                                  # Ollama terpasang/versi/pekerjaan pasang-copot (ollama_ctl.summary).
+                                  "ollama": s.get("ollama"),
                                   "leader": s["id"] == cluster.leader}
                                  for s in alive.values()), key=lambda s: s["name"]),
                 # Komputer yang pernah satu LAN langsung dengan node ini, hidup atau
@@ -232,7 +266,7 @@ def make_server(node):
             if not addr:
                 return ("json", 404, {"error": "komputer tidak ditemukan atau sedang mati"})
             rest = {k: v for k, v in p.items() if k not in ("node", "t")}
-            if path in ("/input", "/fs/write", "/power"):
+            if path in REMOTE_POST_PATHS:
                 res = cluster.rpc(addr, path, rest, timeout=25)
                 return ("json", 200 if res else 502, res or {"error": "komputer tujuan tak terjawab"})
             code, ctype, body, disp = _node_get(addr, path, rest)
@@ -252,7 +286,21 @@ def make_server(node):
                 return ("json", 503, {"error": "layar tidak bisa diambil (bukan Windows / tidak ada sesi layar)"})
             return ("raw", 200, "image/png", png, {"Cache-Control": "no-store"})
         if path == "/input":
-            return ("json", 200, {"sent": remote.inject(p.get("events") or [])})
+            # Posisi kursor SESUDAH input ikut dikirim: dashboard menggambar kursornya sendiri
+            # (tangkapan layar tidak memuat kursor) - lihat remote.cursor_info.
+            sent = remote.inject(p.get("events") or [])
+            return ("json", 200, {"sent": sent, "cursor": remote.cursor_info()})
+        if path == "/cursor":
+            info = remote.cursor_info()
+            if not info:
+                return ("json", 503, {"error": "posisi kursor tidak bisa dibaca (bukan Windows / tidak ada sesi layar)"})
+            return ("json", 200, info)
+        if path == "/ollama":
+            action = str(p.get("action") or "status").strip()
+            if action == "status":
+                return ("json", 200, ollama_ctl.status(cfg.get("ollama_url") or "http://127.0.0.1:11434"))
+            res = ollama_ctl.start(action)
+            return ("json", 200 if res.get("ok") else 409, res)
         if path == "/fs/list":
             return ("json", 200, remote.fs_list(p.get("path", "")))
         if path == "/fs/read":
@@ -338,6 +386,8 @@ def make_server(node):
 
         def _handle(self, payload):
             path = urlsplit(self.path).path
+            if self.client_address[0] in LOCAL and not local_request_safe(self.headers):
+                return self._reply(403, {"error": "permintaan lintas-situs atau Host asing ditolak"})
             if path in ("/", "/remote"):
                 if self._client_ip() not in LOCAL:
                     return self._reply(403, {"error": "halaman ini hanya dari komputer ini"})
@@ -371,8 +421,16 @@ def make_server(node):
 
         def do_GET(self):
             self._raw = b""
-            qs = parse_qs(urlsplit(self.path).query)
-            self._handle({k: v[0] for k, v in qs.items()})
+            path = urlsplit(self.path).path
+            payload = {k: v[0] for k, v in parse_qs(urlsplit(self.path).query).items()}
+            # Rute yang MENGUBAH sesuatu (input, tulis berkas, matikan komputer, pasang/copot Ollama)
+            # hanya lewat POST: GET bisa dipicu halaman web mana pun lewat <img>/navigasi tanpa header
+            # Origin, jadi tak bisa dibedakan dari permintaan sah.
+            if path in REMOTE_POST_PATHS or path in _MUTATING_ROUTES:
+                if path != "/ollama":
+                    return self._reply(405, {"error": "rute ini hanya menerima POST"})
+                payload.pop("action", None)  # GET /ollama = status saja
+            self._handle(payload)
 
         def do_POST(self):
             path = urlsplit(self.path).path

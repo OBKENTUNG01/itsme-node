@@ -8,6 +8,7 @@ Aman: berkas rahasia (.env, kunci, token, login browser/aplikasi) tidak boleh
 dibaca/diunduh walau berkasnya tetap terlihat di daftar.
 """
 
+import math
 import os
 import re
 import struct
@@ -122,6 +123,93 @@ def screen_size():
     return (u.GetSystemMetrics(0), u.GetSystemMetrics(1))
 
 
+# =============================== KURSOR ======================================
+# Tangkapan GDI (StretchBlt di capture_png) TIDAK pernah memuat kursor mouse - kursor
+# adalah lapisan terpisah di atas desktop. Jadi dashboard menggambar kursornya sendiri
+# di atas gambar layar (seperti Chrome Remote Desktop: kursor digambar di sisi klien,
+# bukan bagian video), dari posisi & jenis yang dilaporkan cursor_info() di sini.
+#
+# Kursor standar Windows berbagi handle yang sama dengan LoadCursor(NULL, IDC_*), jadi
+# jenisnya bisa dikenali dengan membandingkan handle. Namanya sengaja nama CSS cursor.
+_IDC_KIND = {
+    32512: "default", 32513: "text", 32514: "wait", 32515: "crosshair", 32516: "default",
+    32642: "nwse-resize", 32643: "nesw-resize", 32644: "ew-resize", 32645: "ns-resize",
+    32646: "move", 32648: "not-allowed", 32649: "pointer", 32650: "progress", 32651: "help",
+}
+_CURSOR_API = None
+
+
+def _cursor_api():
+    global _CURSOR_API
+    if _CURSOR_API is not None:
+        return _CURSOR_API
+    ctypes, wintypes, u, _ = _win_api()
+
+    class CURSORINFO(ctypes.Structure):
+        _fields_ = [("cbSize", wintypes.DWORD), ("flags", wintypes.DWORD),
+                    ("hCursor", ctypes.c_void_p), ("ptScreenPos", wintypes.POINT)]
+
+    u.GetCursorInfo.argtypes = [ctypes.POINTER(CURSORINFO)]
+    u.GetCursorInfo.restype = wintypes.BOOL
+    u.GetCursorPos.argtypes = [ctypes.POINTER(wintypes.POINT)]
+    u.GetCursorPos.restype = wintypes.BOOL
+    u.LoadCursorW.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    u.LoadCursorW.restype = ctypes.c_void_p
+    kinds = {}
+    for idc, kind in _IDC_KIND.items():
+        h = u.LoadCursorW(None, ctypes.c_void_p(idc))
+        if h:
+            kinds.setdefault(h, kind)
+    _CURSOR_API = (ctypes, wintypes, u, CURSORINFO, kinds)
+    return _CURSOR_API
+
+
+def _cursor_pos():
+    """(x, y) kursor sekarang dalam piksel layar (proses sudah DPI-aware, lihat _win_api)."""
+    ctypes, wintypes, u, _, _ = _cursor_api()
+    p = wintypes.POINT()
+    u.GetCursorPos(ctypes.byref(p))
+    return p.x, p.y
+
+
+def cursor_info():
+    """Posisi & jenis kursor di layar utama, atau None kalau tidak bisa dibaca.
+
+    {"x","y": piksel, "w","h": ukuran layar, "nx","ny": 0..1 (relatif layar utama),
+     "visible": False kalau kursor disembunyikan (mis. saat mengetik/sentuh),
+     "kind": nama CSS cursor ("default", "text", "pointer", ...) atau "other"}."""
+    if not IS_WIN:
+        return None
+    try:
+        ctypes, _, u, CURSORINFO, kinds = _cursor_api()
+    except (AttributeError, OSError):
+        return None
+    ci = CURSORINFO()
+    ci.cbSize = ctypes.sizeof(CURSORINFO)
+    if not u.GetCursorInfo(ctypes.byref(ci)):
+        return None
+    sw, sh = u.GetSystemMetrics(0), u.GetSystemMetrics(1)
+    if sw <= 0 or sh <= 0:
+        return None
+    x, y = ci.ptScreenPos.x, ci.ptScreenPos.y
+    # Kursor di monitor LAIN (di luar layar utama) tidak punya posisi yang berarti di gambar layar
+    # utama: lapor tidak terlihat supaya dashboard tidak menggambarnya menempel di tepi.
+    inside = 0 <= x < sw and 0 <= y < sh
+    return {"x": x, "y": y, "w": sw, "h": sh,
+            "nx": round(min(max(x / max(sw - 1, 1), 0.0), 1.0), 5),
+            "ny": round(min(max(y / max(sh - 1, 1), 0.0), 1.0), 5),
+            "visible": bool(ci.flags & 1) and inside,  # CURSOR_SHOWING
+            "kind": kinds.get(ci.hCursor, "other") if ci.hCursor else "none"}
+
+
+def _abs_norm(x, y, sw, sh):
+    """Piksel -> koordinat absolut SendInput (0..65535) yang mendarat TEPAT di piksel itu
+    (Windows memetakan balik dengan floor(n * lebar / 65536)) - diuji nyata, lihat tes."""
+    nx = (int(x) * 65536 + sw - 1) // sw
+    ny = (int(y) * 65536 + sh - 1) // sh
+    return min(nx, 65535), min(ny, 65535)
+
+
 def capture_png(max_w=1280, quality_div=1):
     """PNG layar utama, diperkecil sampai lebar <= max_w. None kalau tak bisa."""
     if not IS_WIN:
@@ -226,7 +314,7 @@ def inject(events):
         return 0
     _ctypes, _u, INPUT, MOUSEINPUT, KEYBDINPUT = _input_api()
     MOVE, ABS, LDN, LUP = 0x0001, 0x8000, 0x0002, 0x0004
-    RDN, RUP, MDN, MUP, WHEEL = 0x0008, 0x0010, 0x0020, 0x0040, 0x0800
+    RDN, RUP, MDN, MUP, WHEEL, HWHEEL = 0x0008, 0x0010, 0x0020, 0x0040, 0x0800, 0x1000
     KEYUP, UNICODE = 0x0002, 0x0004
     btn = {"left": (LDN, LUP), "right": (RDN, RUP), "middle": (MDN, MUP)}
     seq = []
@@ -251,36 +339,59 @@ def inject(events):
     def key_vk(vk, down=True):
         keybd(vk, 0, 0 if down else KEYUP)
 
+    sw, sh = screen_size()  # juga memastikan proses DPI-aware sebelum GetCursorPos
+
+    def finite(v, default=0.0):
+        """Angka terhingga dari isian klien; NaN/inf/teks/None -> default (json.loads Python menerima
+        NaN dan 1e999, dan satu isian aneh tidak boleh menggagalkan seluruh batch)."""
+        try:
+            f = float(v)
+        except (TypeError, ValueError, OverflowError):
+            return default
+        return f if math.isfinite(f) else default
+
     def absxy(e):
-        return int(float(e.get("x", 0)) * 65535), int(float(e.get("y", 0)) * 65535)
+        """x,y klien (0..1, sama dengan nx/ny di cursor_info: piksel / (lebar-1)) -> koordinat
+        absolut SendInput yang mendarat TEPAT di piksel itu, bukan "kira-kira"."""
+        fx = min(max(finite(e.get("x", 0)), 0.0), 1.0)
+        fy = min(max(finite(e.get("y", 0)), 0.0), 1.0)
+        if sw > 0 and sh > 0:
+            return _abs_norm(round(fx * (sw - 1)), round(fy * (sh - 1)), sw, sh)
+        return int(fx * 65535), int(fy * 65535)
 
     def reldxy(e):
         """dx, dy relatif (unit mouse, bukan skala absolut 0..65535), dijepit supaya satu
         kejadian aneh dari klien tidak bisa melempar kursor jauh di luar kendali."""
         def clamp(v):
-            try:
-                v = int(float(v))
-            except (TypeError, ValueError):
-                return 0
-            return max(-2000, min(2000, v))
+            return max(-2000, min(2000, int(finite(v))))
         return clamp(e.get("dx", 0)), clamp(e.get("dy", 0))
+
+    vpos = None  # posisi kursor yang dilacak di dalam satu batch (lihat move_rel)
 
     for e in events:
         t = e.get("t")
         if t == "move":
             x, y = absxy(e)
             mouse(MOVE | ABS, x, y)
+            vpos = None
         elif t == "move_rel":
-            # Mode trackpad: gerak RELATIF terhadap posisi kursor sekarang (tanpa ABS),
-            # bukan lompat ke titik tertentu - dipakai viewer sentuh untuk presisi lebih
-            # baik di layar yang diperkecil/lag (lihat dashboard.py, mode "trackpad").
+            # Gerak RELATIF terhadap posisi kursor sekarang, tapi diinjeksi sebagai gerak
+            # ABSOLUT ke (posisi + dx, dy). SendInput relatif murni ikut "pointer speed" &
+            # akselerasi Windows (bisa dilipatgandakan sampai 4x) sehingga hasilnya tidak
+            # bisa ditebak klien - diuji nyata: dx=100 bisa jadi lompatan ratusan piksel.
+            # Chrome Remote Desktop juga selalu menyuntik koordinat absolut.
             dx, dy = reldxy(e)
-            if dx or dy:
-                mouse(MOVE, dx, dy)
+            if (dx or dy) and sw > 0 and sh > 0:
+                if vpos is None:
+                    vpos = list(_cursor_pos())
+                vpos[0] = min(max(vpos[0] + dx, 0), sw - 1)
+                vpos[1] = min(max(vpos[1] + dy, 0), sh - 1)
+                mouse(MOVE | ABS, *_abs_norm(vpos[0], vpos[1], sw, sh))
         elif t in ("click", "dblclick", "down", "up"):
             if "x" in e:
                 x, y = absxy(e)
                 mouse(MOVE | ABS, x, y)
+                vpos = None
             dn, up = btn.get(e.get("button", "left"), (LDN, LUP))
             if t == "down":
                 mouse(dn)
@@ -291,7 +402,15 @@ def inject(events):
                     mouse(dn)
                     mouse(up)
         elif t == "scroll":
-            mouse(WHEEL, data=int(e.get("dy", 0)))
+            # dy: roda vertikal (+ = ke atas, 120 = satu klik). dx: roda horizontal (+ = ke
+            # kanan). Boleh tidak kelipatan 120 (gulir halus dari gestur dua jari).
+            def wheel(v):
+                return max(-2400, min(2400, int(finite(v))))
+            wy, wx = wheel(e.get("dy", 0)), wheel(e.get("dx", 0))
+            if wy:
+                mouse(WHEEL, data=wy)
+            if wx:
+                mouse(HWHEEL, data=wx)
         elif t == "text":
             for ch in str(e.get("text", ""))[:2000]:
                 key_unicode(ch)
